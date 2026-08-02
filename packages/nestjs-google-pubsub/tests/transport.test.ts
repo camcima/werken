@@ -3,6 +3,10 @@ import { describe, expect, test, vi } from "vitest";
 import { WerkenPubSubTransport } from "@werken/nestjs-google-pubsub";
 import type { IncomingMessage } from "@werken/nestjs-google-pubsub";
 
+/** listen() completes asynchronously — the callback is how Nest learns the transport is ready. */
+const listenReady = (transport: WerkenPubSubTransport) =>
+  new Promise<void>((resolve, reject) => transport.listen((error?: unknown) => (error ? reject(error) : resolve())));
+
 const TYPE = "com.example.thing.happened.v1";
 
 /** Stands in for a Pub/Sub Subscription: an EventEmitter with open/close semantics. */
@@ -60,8 +64,12 @@ describe("lifecycle", () => {
     const transport = transportWith(client);
     const ready = vi.fn();
 
-    transport.listen(ready);
-    await settle();
+    await new Promise<void>((resolve) =>
+      transport.listen((...args: unknown[]) => {
+        ready(...args);
+        resolve();
+      }),
+    );
 
     expect(client.subscription).toHaveBeenCalledWith("s", expect.anything());
     expect(ready).toHaveBeenCalledTimes(1);
@@ -71,8 +79,7 @@ describe("lifecycle", () => {
     const { subscription, client } = fakeClient();
     const transport = transportWith(client);
 
-    transport.listen(() => {});
-    await settle();
+    await listenReady(transport);
     await transport.close();
 
     expect(subscription.close).toHaveBeenCalled();
@@ -83,8 +90,7 @@ describe("lifecycle", () => {
     const { subscription, client } = fakeClient();
     const transport = transportWith(client);
 
-    transport.listen(() => {});
-    await settle();
+    await listenReady(transport);
 
     expect(transport.unwrap()).toBe(subscription);
   });
@@ -97,7 +103,7 @@ describe("lifecycle", () => {
 
   // §Appendix B: fail loudly at startup. Nest surfaces this through the listen callback, so an
   // error here must reach it rather than escaping as an unhandled throw.
-  test("reports a client construction failure through the listen callback", () => {
+  test("reports a client construction failure through the listen callback", async () => {
     const transport = new WerkenPubSubTransport({
       projectId: "p",
       subscription: "s",
@@ -105,12 +111,11 @@ describe("lifecycle", () => {
         throw new Error("bad credentials");
       },
     });
-    const callback = vi.fn();
 
-    transport.listen(callback);
+    const error = await new Promise<unknown>((resolve) => transport.listen((e?: unknown) => resolve(e)));
 
-    expect(callback).toHaveBeenCalledTimes(1);
-    expect(callback.mock.calls[0][0]).toBeInstanceOf(Error);
+    expect(error).toBeInstanceOf(Error);
+    expect(String(error)).toMatch(/bad credentials/);
   });
 
   test("isHealthy reflects whether the subscription is open", async () => {
@@ -118,8 +123,7 @@ describe("lifecycle", () => {
     const transport = transportWith(client);
 
     expect(transport.isHealthy()).toBe(false);
-    transport.listen(() => {});
-    await settle();
+    await listenReady(transport);
     expect(transport.isHealthy()).toBe(true);
 
     await transport.close();
@@ -134,8 +138,7 @@ describe("message handling", () => {
     const handler = vi.fn();
     transport.addHandler(TYPE, handler as never, true);
 
-    transport.listen(() => {});
-    await settle();
+    await listenReady(transport);
 
     const message = incoming();
     subscription.emit("message", message);
@@ -157,8 +160,7 @@ describe("message handling", () => {
       true,
     );
 
-    transport.listen(() => {});
-    await settle();
+    await listenReady(transport);
 
     const message = incoming();
     subscription.emit("message", message);
@@ -172,8 +174,7 @@ describe("message handling", () => {
     const { subscription, client } = fakeClient();
     const transport = transportWith(client);
 
-    transport.listen(() => {});
-    await settle();
+    await listenReady(transport);
 
     const message = incoming();
     subscription.emit("message", message);
@@ -190,8 +191,7 @@ describe("on()", () => {
     const onError = vi.fn();
     transport.on("error", onError);
 
-    transport.listen(() => {});
-    await settle();
+    await listenReady(transport);
 
     const boom = new Error("stream broke");
     subscription.emit("error", boom);

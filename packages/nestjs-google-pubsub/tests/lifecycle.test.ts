@@ -3,6 +3,10 @@ import { describe, expect, test, vi } from "vitest";
 import { WerkenPubSubTransport, toSubscriberOptions } from "@werken/nestjs-google-pubsub";
 import type { IncomingMessage } from "@werken/nestjs-google-pubsub";
 
+/** listen() completes asynchronously — the callback is how Nest learns the transport is ready. */
+const listenReady = (transport: WerkenPubSubTransport) =>
+  new Promise<void>((resolve, reject) => transport.listen((error?: unknown) => (error ? reject(error) : resolve())));
+
 const TYPE = "com.example.thing.happened.v1";
 
 class FakeSubscription extends EventEmitter {
@@ -116,8 +120,7 @@ describe("toSubscriberOptions", () => {
       createClient: () => client as never,
     });
 
-    transport.listen(() => {});
-    await settle();
+    await listenReady(transport);
 
     const passed = subscriptionOptions[0] as { minAckDeadline: unknown; maxExtensionTime: unknown };
     expect(passed.minAckDeadline).toBeInstanceOf(Duration);
@@ -146,8 +149,7 @@ describe("drain on shutdown", () => {
       true,
     );
 
-    transport.listen(() => {});
-    await settle();
+    await listenReady(transport);
 
     const message = incoming();
     subscription.emit("message", message);
@@ -177,8 +179,7 @@ describe("drain on shutdown", () => {
     });
 
     transport.addHandler(TYPE, (() => new Promise(() => {})) as never, true);
-    transport.listen(() => {});
-    await settle();
+    await listenReady(transport);
 
     const message = incoming();
     subscription.emit("message", message);
@@ -201,8 +202,7 @@ describe("drain on shutdown", () => {
     });
 
     transport.addHandler(TYPE, (() => new Promise(() => {})) as never, true);
-    transport.listen(() => {});
-    await settle();
+    await listenReady(transport);
 
     const messages = [incoming("m1"), incoming("m2"), incoming("m3")];
     for (const m of messages) subscription.emit("message", m);
@@ -226,8 +226,7 @@ describe("drain on shutdown", () => {
     const handler = vi.fn();
     transport.addHandler(TYPE, handler as never, true);
 
-    transport.listen(() => {});
-    await settle();
+    await listenReady(transport);
     await transport.close();
 
     subscription.emit("message", incoming());
@@ -248,8 +247,7 @@ describe("drain on shutdown", () => {
     vi.spyOn(transport["logger"], "log").mockImplementation((m: unknown) => void logs.push(String(m)));
 
     transport.addHandler(TYPE, (() => new Promise(() => {})) as never, true);
-    transport.listen(() => {});
-    await settle();
+    await listenReady(transport);
     subscription.emit("message", incoming());
     await settle();
 
@@ -267,8 +265,7 @@ describe("drain on shutdown", () => {
       createClient: () => client as never,
     });
 
-    transport.listen(() => {});
-    await settle();
+    await listenReady(transport);
 
     await transport.close();
     await expect(transport.close()).resolves.toBeUndefined();
@@ -282,8 +279,7 @@ describe("drain on shutdown", () => {
       createClient: () => client as never,
     });
 
-    transport.listen(() => {});
-    await settle();
+    await listenReady(transport);
     expect(transport.isHealthy()).toBe(true);
 
     await transport.close();

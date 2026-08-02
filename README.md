@@ -303,6 +303,62 @@ _delivery_, not about _processing_. Werken narrows the duplicate window; your ha
 
 ---
 
+## Sharing a development project
+
+Pub/Sub delivers each message to **exactly one** subscriber of a subscription. When several
+developers point at the same dev project and the same subscription, they consume each other's
+messages. Nothing errors — it presents as flaky, intermittent delivery, and it reliably costs
+someone an afternoon before they work out what is happening.
+
+`resourcePrefix` gives each developer their own resource names inside the shared project:
+
+```ts
+new WerkenPubSubTransport({
+  projectId: process.env.GCP_PROJECT_ID!,
+  subscription: "orders-consumer",
+  deadLetterTopic: "orders-dead-letters",
+  // Recommended: the developer's username, from the environment.
+  resourcePrefix: process.env.WERKEN_RESOURCE_PREFIX,
+});
+```
+
+With `WERKEN_RESOURCE_PREFIX=alice` that consumer subscribes to `alice-orders-consumer` and
+dead-letters to `alice-orders-dead-letters`. Set the same value on the publisher so both directions
+are scoped together — **a scoped consumer reading from an unscoped topic is worse than no scoping**,
+because it looks configured and receives nothing.
+
+### This is for shared development projects only
+
+- **Unset or empty is a no-op**, and that is the production path. With no prefix, names are passed
+  through untouched and not validated — they are yours, not ours to police.
+- **It refuses to run in production.** Setting `resourcePrefix` while `NODE_ENV=production` fails at
+  startup, because a scoped production consumer subscribes to a name nothing publishes to and
+  silently receives nothing forever. `allowUnsafeResourcePrefix: true` overrides this if you really
+  mean it.
+- **It logs at WARN on startup**, naming the resolved resources. Silent name rewriting is exactly
+  what costs an hour to diagnose when someone forgets the env var is set in their shell.
+- **Invalid prefixes fail at startup**, not at first publish, with the full resolved name in the
+  error. Pub/Sub names must be 3-255 characters, start with a letter, avoid a leading `goog`, and
+  use only letters, digits, `-`, `.`, `_`, `~`, `+` or `%`.
+
+### You must create the scoped resources yourself
+
+**Werken never provisions topics or subscriptions** — that belongs in Terraform or your platform
+catalogue, in dev as much as in production. If the scoped subscription does not exist, startup fails
+naming the exact resource that is missing rather than sitting there healthy and idle:
+
+```bash
+PREFIX="$USER"
+gcloud pubsub topics create "$PREFIX-orders-dead-letters" --project "$GCP_PROJECT_ID"
+gcloud pubsub subscriptions create "$PREFIX-orders-consumer" \
+  --topic orders --project "$GCP_PROJECT_ID"
+```
+
+Note the subscription attaches to the **shared** `orders` topic, which is what lets every developer
+receive their own copy of the same published events.
+
+---
+
 ## Licence
 
 MIT

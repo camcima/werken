@@ -8,6 +8,10 @@ import {
 } from "@werken/nestjs-google-pubsub";
 import type { IncomingMessage } from "@werken/nestjs-google-pubsub";
 
+/** listen() completes asynchronously — the callback is how Nest learns the transport is ready. */
+const listenReady = (transport: WerkenPubSubTransport) =>
+  new Promise<void>((resolve, reject) => transport.listen((error?: unknown) => (error ? reject(error) : resolve())));
+
 const TYPE = "com.example.thing.happened.v1";
 
 function incoming(overrides: Partial<IncomingMessage> = {}): IncomingMessage {
@@ -118,8 +122,7 @@ describe("transport integration with dead-lettering", () => {
       true,
     );
 
-    transport.listen(() => {});
-    await settle();
+    await listenReady(transport);
 
     const message = incoming();
     subscription.emit("message", message);
@@ -141,8 +144,7 @@ describe("transport integration with dead-lettering", () => {
       createClient: () => client as never,
     });
 
-    transport.listen(() => {});
-    await settle();
+    await listenReady(transport);
 
     const message = incoming({ attributes: { "ce-specversion": "1.0" } });
     subscription.emit("message", message);
@@ -162,8 +164,7 @@ describe("transport integration with dead-lettering", () => {
       createClient: () => client as never,
     });
 
-    transport.listen(() => {});
-    await settle();
+    await listenReady(transport);
 
     const message = incoming({ attributes: { "ce-specversion": "1.0" } });
     subscription.emit("message", message);

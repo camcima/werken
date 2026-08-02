@@ -7,6 +7,8 @@ import type { RejectionPolicy, ValidationOptions } from "./pipeline.js";
  * structurally so the transport can be unit-tested without a broker.
  */
 export interface SubscriptionLike {
+  /** Present on a real Subscription; used only for the scoped-startup existence check. */
+  exists?(): Promise<[boolean]>;
   // Signature kept wide enough for both `@google-cloud/pubsub`'s Subscription and a plain
   // EventEmitter, so the transport can be driven in-memory by the test harness.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- must match EventEmitter's own `on`, which uses any[]
@@ -80,6 +82,22 @@ export interface WerkenTransportOptions {
 
   /** Max wall-clock to drain in-flight handlers on shutdown. Default 30s. */
   shutdownDrainTimeoutMs?: number;
+
+  /**
+   * Prefix applied to the resolved subscription name, the dead-letter topic, and (via the
+   * publisher) resolved topic names.
+   *
+   * Exists because Pub/Sub delivers each message to exactly one subscriber: developers sharing a
+   * dev project and a subscription silently steal each other's messages, which presents as flaky
+   * delivery. Scoping gives each developer their own resources in the same project.
+   *
+   * Development only. Undefined or empty is a no-op and is the production path. The library does
+   * not create the scoped resources — provision them yourself.
+   */
+  resourcePrefix?: string;
+
+  /** Permits `resourcePrefix` while NODE_ENV=production. Almost certainly a mistake. */
+  allowUnsafeResourcePrefix?: boolean;
 
   /** Regional endpoint override. */
   apiEndpoint?: string;
@@ -175,4 +193,24 @@ export function toSubscriberOptions(options: WerkenTransportOptions): Subscriber
     minAckDeadlineMs: options.ackDeadline?.initialMs ?? DEFAULT_ACK_DEADLINE_MS,
     maxExtensionTimeMs: options.ackDeadline?.maxExtensionMs ?? DEFAULT_MAX_EXTENSION_MS,
   };
+}
+
+/**
+ * Publisher-side configuration (§4.6).
+ *
+ * `resourcePrefix` and `allowUnsafeResourcePrefix` are repeated here deliberately rather than
+ * inherited: both directions must be scoped together. A scoped consumer reading from an unscoped
+ * topic is worse than no scoping at all — it looks configured and receives nothing.
+ *
+ * The publisher itself lands in M9; this shape exists now so the option is not bolted on later.
+ */
+export interface WerkenPublisherOptions {
+  /** This service's `ce-source`. */
+  source: string;
+
+  /** Prefix applied to resolved topic names. Development only — see `WerkenTransportOptions`. */
+  resourcePrefix?: string;
+
+  /** Permits `resourcePrefix` while NODE_ENV=production. Almost certainly a mistake. */
+  allowUnsafeResourcePrefix?: boolean;
 }

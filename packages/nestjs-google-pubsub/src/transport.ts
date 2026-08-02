@@ -14,6 +14,7 @@ import {
   type WerkenTransportOptions,
 } from "./options.js";
 import type { IdempotencyStore } from "./idempotency.js";
+import { applyResourcePrefix, assertResourcePrefixSafe } from "./resource-name.js";
 import type { IncomingMessage } from "./types.js";
 
 export type WerkenTransportStatus = "connected" | "disconnected";
@@ -94,45 +95,81 @@ export class WerkenPubSubTransport
   }
 
   listen(callback: (...optionalParams: unknown[]) => void): void {
-    try {
-      this.client = this.options.createClient?.(this.options) ?? this.createDefaultClient();
+    void this.start().then(
+      () => callback(),
+      (error: unknown) => callback(error),
+    );
+  }
 
-      this.pipeline = this.buildPipeline(
-        this.options.deadLetterTopic === undefined
-          ? undefined
-          : new PubSubDeadLetterPublisher(this.client, this.options.deadLetterTopic),
-        this.buildCodec(this.client),
+  private async start(): Promise<void> {
+    const prefix = this.options.resourcePrefix;
+    assertResourcePrefixSafe(prefix, this.options.allowUnsafeResourcePrefix === true, process.env.NODE_ENV);
+
+    // Resolved before anything connects, so an invalid prefix fails here rather than at first
+    // publish, with the full name the operator actually needs to see.
+    const subscriptionName = applyResourcePrefix(this.options.subscription, prefix);
+    const deadLetterTopic =
+      this.options.deadLetterTopic === undefined
+        ? undefined
+        : applyResourcePrefix(this.options.deadLetterTopic, prefix);
+
+    if (prefix !== undefined && prefix !== "") {
+      // Silent name rewriting is exactly the thing that costs an hour to diagnose when someone
+      // forgets an env var is set.
+      this.logger.warn(
+        `werken: resourcePrefix ${JSON.stringify(prefix)} is active — subscribing to ` +
+          `${JSON.stringify(subscriptionName)}` +
+          (deadLetterTopic === undefined ? "" : ` and dead-lettering to ${JSON.stringify(deadLetterTopic)}`) +
+          ". This is a development-only affordance; unset it in production.",
       );
-
-      this.draining = false;
-      const { flowControl, streamingOptions, minAckDeadlineMs, maxExtensionTimeMs } = toSubscriberOptions(this.options);
-      const Duration = this.loadDuration();
-      this.subscription = this.client.subscription(this.options.subscription, {
-        flowControl,
-        streamingOptions,
-        // Must be the SDK's own Duration: it calls .total() and Duration.compare() on these, so a
-        // structurally-similar object throws "first.total is not a function" on close().
-        ...(Duration === undefined
-          ? {}
-          : {
-              minAckDeadline: Duration.from({ millis: minAckDeadlineMs }),
-              maxExtensionTime: Duration.from({ millis: maxExtensionTimeMs }),
-            }),
-      });
-
-      this.subscription.on("message", (message: IncomingMessage) => {
-        void this.handleMessage(message);
-      });
-
-      this.subscription.on("error", (error: unknown) => {
-        this.emit("error", error);
-      });
-
-      this._status$.next("connected");
-      callback();
-    } catch (error) {
-      callback(error);
     }
+
+    this.client = this.options.createClient?.(this.options) ?? this.createDefaultClient();
+
+    this.pipeline = this.buildPipeline(
+      deadLetterTopic === undefined ? undefined : new PubSubDeadLetterPublisher(this.client, deadLetterTopic),
+      this.buildCodec(this.client),
+    );
+
+    this.draining = false;
+    const { flowControl, streamingOptions, minAckDeadlineMs, maxExtensionTimeMs } = toSubscriberOptions(this.options);
+    const Duration = this.loadDuration();
+    this.subscription = this.client.subscription(subscriptionName, {
+      flowControl,
+      streamingOptions,
+      // Must be the SDK's own Duration: it calls .total() and Duration.compare() on these, so a
+      // structurally-similar object throws "first.total is not a function" on close().
+      ...(Duration === undefined
+        ? {}
+        : {
+            minAckDeadline: Duration.from({ millis: minAckDeadlineMs }),
+            maxExtensionTime: Duration.from({ millis: maxExtensionTimeMs }),
+          }),
+    });
+
+    // The library never provisions resources. A scoped subscription that was not created is a
+    // startup failure, not a consumer that sits there healthy and receives nothing.
+    if (prefix !== undefined && prefix !== "" && this.subscription.exists !== undefined) {
+      const [exists] = await this.subscription.exists();
+      if (!exists) {
+        this.subscription = undefined;
+        throw new Error(
+          `werken: subscription ${JSON.stringify(subscriptionName)} does not exist in project ` +
+            `${JSON.stringify(this.options.projectId)}. Scoped resources are not created by this library — ` +
+            "create it, or unset resourcePrefix.",
+        );
+      }
+    }
+
+    this.subscription.on("message", (message: IncomingMessage) => {
+      void this.handleMessage(message);
+    });
+
+    this.subscription.on("error", (error: unknown) => {
+      this.emit("error", error);
+    });
+
+    this._status$.next("connected");
   }
 
   /**

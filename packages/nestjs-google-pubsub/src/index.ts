@@ -7,6 +7,7 @@ export type {
   SchemaLike,
   SchemaRegistryOptions,
   SubscriberOptionsLike,
+  WerkenPublisherOptions,
   SubscriptionLike,
   TopicLike,
   WerkenTransportOptions,
@@ -35,6 +36,7 @@ export { WerkenPubSubTransport } from "./transport.js";
 export { DEFAULT_MAX_CACHED_REVISIONS, DEFAULT_SCHEMA_CACHE_TTL_MS, SchemaRevisionCache } from "./schema/cache.js";
 export { AvroCodec, SchemaDecodeError } from "./schema/avro-codec.js";
 export { SCHEMA_ATTRIBUTES, schemaMetaFromAttributes } from "./schema/attributes.js";
+export { ResourcePrefixError, applyResourcePrefix, assertResourcePrefixSafe } from "./resource-name.js";
 export type {
   IdempotencyKey,
   IdempotencyStore,
