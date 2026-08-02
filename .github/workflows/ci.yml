@@ -8,11 +8,18 @@ on:
 
 env:
   PNPM_VERSION: 11.18.0
-  NODE_VERSION: "22"
+  # Version used by jobs that only need one. Must appear in the matrices below.
+  PRIMARY_NODE_VERSION: "22"
 
 jobs:
   ci:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # engines declares >=22; both supported majors are proven on every PR rather than assumed.
+        node-version: ["22", "24"]
+    name: ci (node ${{ matrix.node-version }})
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -20,7 +27,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
       - uses: actions/setup-node@v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: ${{ matrix.node-version }}
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
@@ -31,17 +38,25 @@ jobs:
       - run: pnpm run lint:no-deep-imports
       - run: pnpm run lint:neutrality
       - run: pnpm run test:coverage
+      # Uploaded from one leg only. The matrix legs produce identical coverage, so uploading both
+      # just adds noise to the Codecov report.
       - uses: codecov/codecov-action@v7
+        if: matrix.node-version == env.PRIMARY_NODE_VERSION
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage/coverage-final.json
           flags: unit
           fail_ci_if_error: true
 
-  # §M2 / §M5 — exercised against the Pub/Sub emulator, which supports schemas. No GCP project,
-  # credentials or spend required. See docs/spikes/.
+  # Exercised against the Pub/Sub emulator (which supports schemas) and a real Postgres. No GCP
+  # project, credentials or spend required.
   integration:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["22", "24"]
+    name: integration (node ${{ matrix.node-version }})
     services:
       postgres:
         image: postgres:16
@@ -62,7 +77,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
       - uses: actions/setup-node@v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: ${{ matrix.node-version }}
           cache: "pnpm"
       - name: Start Pub/Sub emulator
         run: |
@@ -72,7 +87,8 @@ jobs:
           timeout 120 bash -c 'until curl -s -o /dev/null http://localhost:8085/v1/projects/werken-ci/topics; do sleep 2; done'
       - run: pnpm install --frozen-lockfile
       # The SIGTERM drain test spawns a real child process against the built package, so the
-      # integration suite needs dist/ present.
+      # integration suite needs dist/ present. That path is also the most Node-version-sensitive
+      # thing here, which is why integration is matrixed too rather than pinned to one major.
       - run: pnpm run build
       - run: pnpm vitest run packages/*/tests/integration
         env:
@@ -81,7 +97,7 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/werken_test
 
   # §2.3 — Nest 12 readiness. Non-blocking by design: it warns us before Nest 12 lands, without
-  # gating merges on an upstream prerelease.
+  # gating merges on an upstream prerelease. One Node version is enough for a compatibility canary.
   nest-next:
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -92,7 +108,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
       - uses: actions/setup-node@v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
       - run: pnpm add -D -w @nestjs/common@next @nestjs/core@next @nestjs/microservices@next

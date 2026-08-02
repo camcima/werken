@@ -7,6 +7,10 @@ pnpm install
 pnpm run hooks:install   # required — see below
 ```
 
+Node **22 or 24**. `engines` declares `>=22` and CI runs both majors as a matrix — for unit and
+integration alike, since the SIGTERM drain test spawns a child process and is the most
+Node-version-sensitive code here. `.nvmrc` pins 24 for local development; either is supported.
+
 ### Why `hooks:install` is a separate step
 
 pnpm 11 does not run lifecycle scripts by default (`ignore-scripts` is on), so neither this repo's
