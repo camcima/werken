@@ -1,0 +1,11 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "packages/cloudevents/tsconfig.cjs.json"
+    },
+    {
+      "path": "packages/nestjs-google-pubsub/tsconfig.cjs.json"
+    }
+  ]
+}

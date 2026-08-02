@@ -1,0 +1,18 @@
+# osv-scanner runs against pnpm-lock.yaml. Unlike duraflows, this repo DOES ship real third-party
+# runtime dependencies to consumers: `avsc` (@werken/avro-codec) and `pg`/`kysely`
+# (@werken/idempotency-postgres). `@google-cloud/pubsub`, `@nestjs/*` and `@opentelemetry/api` are
+# peerDependencies and so belong to the consumer's tree.
+#
+# Because this library sits under every event consumer in the company, advisories against those
+# runtime deps must NOT be suppressed — a blanket `ecosystem = "npm"` ignore (as used in duraflows,
+# where the runtime tree is a single first-party leaf) would be wrong here.
+#
+# The known pain point is that osv-scanner cannot classify pnpm (lockfileVersion 9) TRANSITIVE dev
+# dependencies as "dev", so dev-tooling advisories surface as CI failures despite never reaching
+# consumers. Handle those by adding narrow, dated, per-advisory ignores below rather than by
+# ignoring the ecosystem wholesale.
+#
+# [[IgnoredVulns]]
+# id = "GHSA-xxxx-xxxx-xxxx"
+# ignoreUntil = 2026-12-31
+# reason = "dev-only transitive (vite -> ...); not reachable from published packages"

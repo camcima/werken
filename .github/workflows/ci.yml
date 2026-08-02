@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  PNPM_VERSION: 11.18.0
+  NODE_VERSION: "22"
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - run: pnpm run lint
+      - run: pnpm run format:check
+      - run: pnpm run typecheck
+      # Acceptance criteria 11 and 13 (§9). Also enforced pre-commit via lefthook.
+      - run: pnpm run lint:no-deep-imports
+      - run: pnpm run lint:neutrality
+      - run: pnpm run test:coverage
+      - uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage/coverage-final.json
+          flags: unit
+          fail_ci_if_error: true
+
+  # §M2 / §M5 — exercised against the Pub/Sub emulator, which supports schemas. No GCP project,
+  # credentials or spend required. See docs/spikes/.
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "pnpm"
+      - name: Start Pub/Sub emulator
+        run: |
+          docker run -d --name pubsub-emu -p 8085:8085 \
+            gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators \
+            gcloud beta emulators pubsub start --project=werken-ci --host-port=0.0.0.0:8085
+          timeout 120 bash -c 'until curl -s -o /dev/null http://localhost:8085/v1/projects/werken-ci/topics; do sleep 2; done'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm vitest run packages/*/tests/integration
+        env:
+          PUBSUB_EMULATOR_HOST: localhost:8085
+          PUBSUB_PROJECT_ID: werken-ci
+
+  # §2.3 — Nest 12 readiness. Non-blocking by design: it warns us before Nest 12 lands, without
+  # gating merges on an upstream prerelease.
+  nest-next:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm add -D -w @nestjs/common@next @nestjs/core@next @nestjs/microservices@next
+      - run: pnpm run build
+      - run: pnpm run test
+
+  osv-scanner:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run OSV-Scanner
+        uses: google/osv-scanner-action/osv-scanner-action@v2.3.8
+        with:
+          scan-args: |-
+            --recursive
+            .

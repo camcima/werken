@@ -1,0 +1,30 @@
+pre-commit:
+  parallel: true
+  commands:
+    lint:
+      run: pnpm run lint
+    format:
+      run: pnpm run format:check
+    # Acceptance criterion 11 — no import from a Nest path containing /dist/ or /internal/.
+    no-deep-imports:
+      run: pnpm run lint:no-deep-imports
+    # Acceptance criterion 13 — no domain nouns in library source.
+    neutrality:
+      run: pnpm run lint:neutrality
+    secrets:
+      run: "if command -v gitleaks >/dev/null 2>&1; then gitleaks protect --staged --no-banner; fi"
+
+pre-push:
+  parallel: true
+  commands:
+    test:
+      run: pnpm run test
+    typecheck:
+      run: pnpm run typecheck
+    semgrep:
+      run: "if command -v semgrep >/dev/null 2>&1; then semgrep scan --config auto --error --quiet packages/; fi"
+
+commit-msg:
+  commands:
+    commitlint:
+      run: pnpm exec commitlint --edit {1}

@@ -1,0 +1,19 @@
+packages:
+  - "packages/*"
+  - "examples/*"
+
+# pnpm 11 no longer reads the `pnpm` field in package.json — these settings live here now.
+# See https://pnpm.io/settings
+linkWorkspacePackages: true
+
+# lefthook's postinstall is what installs the git hooks. Without this it is skipped silently and
+# the quality gates stop running locally.
+onlyBuiltDependencies:
+  - lefthook
+
+overrides:
+  brace-expansion: ^5.0.6
+  fast-uri: ^3.1.2
+  js-yaml: ^4.2.0
+  typescript: ^5.9.3
+  undici: ">=8.5.0"
