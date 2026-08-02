@@ -37,12 +37,15 @@ describe("tryRecord", () => {
     expect(await store.tryRecord(key, 60_000, ctx)).toBe(false);
   });
 
-  test("uses INSERT ... ON CONFLICT DO NOTHING", async () => {
+  // Only the shape is asserted here. Whether Postgres actually returns zero rows on conflict, and
+  // whether an expired marker can be re-recorded, are contracts with the database and are covered
+  // by tests/integration/sql-idempotency.integration.test.ts.
+  test("records with a single conflict-guarded upsert", async () => {
     const { executor, calls } = fakeExecutor([1]);
     await createSqlIdempotencyStore({ executor: () => executor }).tryRecord(key, 60_000, ctx);
 
     expect(calls[0].sql).toMatch(/insert into/i);
-    expect(calls[0].sql).toMatch(/on conflict .* do nothing/i);
+    expect(calls[0].sql).toMatch(/on conflict/i);
   });
 
   // Both statements RETURNING means an adapter only ever reports "rows returned", which is the one

@@ -6,9 +6,18 @@ export type {
   PubSubClientLike,
   SchemaLike,
   SchemaRegistryOptions,
+  SubscriberOptionsLike,
   SubscriptionLike,
   TopicLike,
   WerkenTransportOptions,
+} from "./options.js";
+export {
+  DEFAULT_ACK_DEADLINE_MS,
+  DEFAULT_FLOW_CONTROL,
+  DEFAULT_MAX_EXTENSION_MS,
+  DEFAULT_MAX_STREAMS,
+  DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS,
+  toSubscriberOptions,
 } from "./options.js";
 export type { WerkenTransportEvents, WerkenTransportStatus } from "./transport.js";
 export type { SchemaCacheStats, SchemaRevisionCacheOptions } from "./schema/cache.js";

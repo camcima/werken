@@ -7,8 +7,8 @@ import type { DeadLetterPublisher } from "./dead-letter.js";
 import { AvroCodec } from "./schema/avro-codec.js";
 import { NoopIdempotencyStore, createSqlIdempotencyStore } from "./idempotency.js";
 import {
-  DEFAULT_FLOW_CONTROL,
-  DEFAULT_MAX_STREAMS,
+  DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS,
+  toSubscriberOptions,
   type PubSubClientLike,
   type SubscriptionLike,
   type WerkenTransportOptions,
@@ -37,6 +37,9 @@ export class WerkenPubSubTransport
 {
   private client?: PubSubClientLike;
   private subscription?: SubscriptionLike;
+  /** In-flight handlers, so shutdown can wait for them rather than cutting them off. */
+  private readonly inFlight = new Map<IncomingMessage, Promise<void>>();
+  private draining = false;
   // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type -- Server<EventsMap> constrains to Record<string, Function>, so this is the type Nest hands us
   private readonly listeners = new Map<keyof WerkenTransportEvents, Function[]>();
   private pipeline: MessagePipeline;
@@ -101,10 +104,20 @@ export class WerkenPubSubTransport
         this.buildCodec(this.client),
       );
 
-      const flowControl = { ...DEFAULT_FLOW_CONTROL, ...this.options.flowControl };
+      this.draining = false;
+      const { flowControl, streamingOptions, minAckDeadlineMs, maxExtensionTimeMs } = toSubscriberOptions(this.options);
+      const Duration = this.loadDuration();
       this.subscription = this.client.subscription(this.options.subscription, {
         flowControl,
-        streamingOptions: { maxStreams: this.options.streaming?.maxStreams ?? DEFAULT_MAX_STREAMS },
+        streamingOptions,
+        // Must be the SDK's own Duration: it calls .total() and Duration.compare() on these, so a
+        // structurally-similar object throws "first.total is not a function" on close().
+        ...(Duration === undefined
+          ? {}
+          : {
+              minAckDeadline: Duration.from({ millis: minAckDeadlineMs }),
+              maxExtensionTime: Duration.from({ millis: maxExtensionTimeMs }),
+            }),
       });
 
       this.subscription.on("message", (message: IncomingMessage) => {
@@ -122,15 +135,53 @@ export class WerkenPubSubTransport
     }
   }
 
+  /**
+   * Drain sequence (§5.6). Nest calls this on shutdown, which needs
+   * `app.enableShutdownHooks()` in the consumer's bootstrap — without it, scale-down kills
+   * in-flight work and produces duplicates on every event.
+   */
   async close(): Promise<void> {
+    if (this.draining) return;
+    this.draining = true;
+    const startedAt = Date.now();
+
+    // 1. Stop taking new work. Listeners come off first so nothing new is leased while draining.
+    this.subscription?.removeAllListeners();
+
+    // 2. Await in-flight handlers, bounded.
+    const timeoutMs = this.options.shutdownDrainTimeoutMs ?? DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS;
+    const outstanding = [...this.inFlight.values()];
+    const completed = outstanding.length;
+    let timedOut = false;
+    if (outstanding.length > 0) {
+      timedOut = !(await raceWithTimeout(Promise.allSettled(outstanding), timeoutMs));
+    }
+
+    // 3. Nack anything still running at the timeout. Fast redelivery beats letting the ack deadline
+    //    lapse silently, and nacking is the only outcome that cannot ack unprocessed work.
+    let nacked = 0;
+    for (const message of this.inFlight.keys()) {
+      try {
+        message.nack();
+        nacked++;
+      } catch (error) {
+        this.logger.error(`werken: failed to nack ${message.id} during drain: ${asMessage(error)}`);
+      }
+    }
+    this.inFlight.clear();
+
+    // 4. Close the subscription and client.
     try {
-      this.subscription?.removeAllListeners();
       await this.subscription?.close();
       await this.client?.close();
     } finally {
       this.subscription = undefined;
       this.client = undefined;
       this._status$.next("disconnected");
+      this.logger.log(
+        `werken: drain complete — completed=${completed - nacked} nacked=${nacked} ` +
+          `durationMs=${Date.now() - startedAt}${timedOut ? " (timed out)" : ""}`,
+      );
       this.emit("close");
     }
   }
@@ -156,6 +207,16 @@ export class WerkenPubSubTransport
     return this.subscription !== undefined;
   }
 
+  /** The SDK's Duration class, or undefined if the peer dependency is not installed. */
+  private loadDuration(): { from(like: { millis: number }): unknown } | undefined {
+    try {
+      const pkg = this.loadPackage<Record<string, unknown>>("@google-cloud/pubsub", WerkenPubSubTransport.name);
+      return pkg["Duration"] as { from(like: { millis: number }): unknown } | undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   private createDefaultClient(): PubSubClientLike {
     // Nest's own helper, so @google-cloud/pubsub stays a peer dependency and resolution works the
     // same way in the ESM and CJS builds.
@@ -168,6 +229,20 @@ export class WerkenPubSubTransport
   }
 
   private async handleMessage(message: IncomingMessage): Promise<void> {
+    // Anything arriving after the drain began is left unacked so Pub/Sub redelivers it to a live
+    // instance rather than this one abandoning it.
+    if (this.draining) return;
+
+    const tracked = this.processMessage(message);
+    this.inFlight.set(message, tracked);
+    try {
+      await tracked;
+    } finally {
+      this.inFlight.delete(message);
+    }
+  }
+
+  private async processMessage(message: IncomingMessage): Promise<void> {
     const outcome = await this.pipeline.handle(message);
     // 'dead-letter' means the copy is already safely on the dead-letter topic, so the original can
     // be acked. A failed dead-letter publish comes back as 'nack' instead.
@@ -183,6 +258,22 @@ export class WerkenPubSubTransport
       listener(...args);
     }
   }
+}
+
+async function raceWithTimeout(work: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+  });
+  try {
+    return (await Promise.race([work.then(() => true), timeout])) !== false;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+function asMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function resolveIdempotencyStore(options: WerkenTransportOptions, warn: (message: string) => void): IdempotencyStore {

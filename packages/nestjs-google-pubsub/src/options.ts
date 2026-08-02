@@ -68,6 +68,19 @@ export interface WerkenTransportOptions {
     maxStreams?: number;
   };
 
+  ackDeadline?: {
+    /** Initial ack deadline. Default 60s. */
+    initialMs?: number;
+    /**
+     * Cap on automatic lease extension. Default 10 minutes. The SDK stops extending at this point
+     * and the message's deadline simply lapses, so a handler that runs longer gets redelivered.
+     */
+    maxExtensionMs?: number;
+  };
+
+  /** Max wall-clock to drain in-flight handlers on shutdown. Default 30s. */
+  shutdownDrainTimeoutMs?: number;
+
   /** Regional endpoint override. */
   apiEndpoint?: string;
 
@@ -120,3 +133,46 @@ export const DEFAULT_FLOW_CONTROL: Required<FlowControlOptions> = {
 };
 
 export const DEFAULT_MAX_STREAMS = 1;
+export const DEFAULT_ACK_DEADLINE_MS = 60_000;
+export const DEFAULT_MAX_EXTENSION_MS = 600_000;
+export const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 30_000;
+
+/**
+ * The subscriber options this transport hands to `PubSub#subscription()`, with ack deadlines still
+ * as plain milliseconds.
+ *
+ * They are NOT converted to `Duration` here. The SDK calls `.total()` and `Duration.compare()` on
+ * these values internally, so a hand-rolled duck-type crashes it during `subscription.close()` —
+ * only the SDK's own `Duration` will do. The transport converts, because that is where the SDK is
+ * loaded; keeping this function free of the import is what lets it be unit-tested without one.
+ */
+export interface SubscriberOptionsLike {
+  flowControl: { maxMessages: number; maxBytes: number; allowExcessMessages: boolean };
+  streamingOptions: { maxStreams: number };
+  minAckDeadlineMs: number;
+  maxExtensionTimeMs: number;
+}
+
+/**
+ * Translates Werken's broker-neutral option names into the Node SDK's.
+ *
+ * This mapping is not cosmetic. §4.1 names these after the Pub/Sub concepts (`maxOutstandingMessages`,
+ * as the Python and Java clients do), but the Node client's own `FlowControlOptions` uses
+ * `maxMessages`/`maxBytes`. Passing our names straight through means the SDK silently ignores them
+ * and applies its own far larger defaults — flow control that looks configured and is not.
+ *
+ * Ack deadlines are `Duration` objects in the SDK, not raw milliseconds, for the same reason.
+ */
+export function toSubscriberOptions(options: WerkenTransportOptions): SubscriberOptionsLike {
+  const flow = { ...DEFAULT_FLOW_CONTROL, ...options.flowControl };
+  return {
+    flowControl: {
+      maxMessages: flow.maxOutstandingMessages,
+      maxBytes: flow.maxOutstandingBytes,
+      allowExcessMessages: flow.allowExcessMessages,
+    },
+    streamingOptions: { maxStreams: options.streaming?.maxStreams ?? DEFAULT_MAX_STREAMS },
+    minAckDeadlineMs: options.ackDeadline?.initialMs ?? DEFAULT_ACK_DEADLINE_MS,
+    maxExtensionTimeMs: options.ackDeadline?.maxExtensionMs ?? DEFAULT_MAX_EXTENSION_MS,
+  };
+}

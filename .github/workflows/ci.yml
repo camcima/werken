@@ -42,6 +42,19 @@ jobs:
   # credentials or spend required. See docs/spikes/.
   integration:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: werken_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -58,10 +71,14 @@ jobs:
             gcloud beta emulators pubsub start --project=werken-ci --host-port=0.0.0.0:8085
           timeout 120 bash -c 'until curl -s -o /dev/null http://localhost:8085/v1/projects/werken-ci/topics; do sleep 2; done'
       - run: pnpm install --frozen-lockfile
+      # The SIGTERM drain test spawns a real child process against the built package, so the
+      # integration suite needs dist/ present.
+      - run: pnpm run build
       - run: pnpm vitest run packages/*/tests/integration
         env:
           PUBSUB_EMULATOR_HOST: localhost:8085
           PUBSUB_PROJECT_ID: werken-ci
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/werken_test
 
   # §2.3 — Nest 12 readiness. Non-blocking by design: it warns us before Nest 12 lands, without
   # gating merges on an upstream prerelease.

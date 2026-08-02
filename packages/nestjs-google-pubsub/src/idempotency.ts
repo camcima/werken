@@ -91,12 +91,20 @@ export function createSqlIdempotencyStore(options: SqlIdempotencyStoreOptions): 
   return {
     async tryRecord(key, ttlMs, ctx) {
       const executor = await options.executor(ctx);
-      // ON CONFLICT DO NOTHING makes check-and-record a single atomic statement, so two concurrent
-      // consumers of the same event cannot both win a read-then-write race.
+      // A single atomic statement, so two concurrent consumers of the same event cannot both win a
+      // read-then-write race.
+      //
+      // DO UPDATE ... WHERE expires_at <= now(), not DO NOTHING: the row outlives its TTL until
+      // something prunes it, so DO NOTHING would keep matching an expired row and report every
+      // later delivery as a duplicate — the key would never actually free up. The guarded update
+      // refreshes an expired marker (returning a row, so "newly recorded") and leaves a live one
+      // untouched (returning none, so "already present").
       const result = await executor.execute(
         `INSERT INTO ${table} (consumer, source, event_id, expires_at)
          VALUES ($1, $2, $3, now() + ($4::bigint * interval '1 millisecond'))
-         ON CONFLICT (consumer, source, event_id) DO NOTHING
+         ON CONFLICT (consumer, source, event_id) DO UPDATE
+           SET expires_at = EXCLUDED.expires_at, processed_at = now()
+           WHERE ${table}.expires_at <= now()
          RETURNING 1`,
         [key.consumer, key.source, key.id, String(ttlMs)],
       );
