@@ -1,0 +1,79 @@
+{
+  "name": "@werken/nestjs-google-pubsub",
+  "version": "0.0.0",
+  "description": "NestJS custom transport for Google Cloud Pub/Sub speaking CloudEvents 1.0. Write an event consumer as an ordinary Nest controller.",
+  "keywords": [
+    "nestjs",
+    "pubsub",
+    "cloudevents",
+    "microservices",
+    "transport",
+    "events"
+  ],
+  "author": "Carlos Cima",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "homepage": "https://github.com/camcima/werken#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/camcima/werken.git",
+    "directory": "packages/nestjs-google-pubsub"
+  },
+  "bugs": {
+    "url": "https://github.com/camcima/werken/issues"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/index.d.ts",
+        "default": "./dist/cjs/index.js"
+      }
+    },
+    "./testing": {
+      "import": {
+        "types": "./dist/testing/index.d.ts",
+        "default": "./dist/testing/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/testing/index.d.ts",
+        "default": "./dist/cjs/testing/index.js"
+      }
+    }
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "!dist/**/*.tsbuildinfo",
+    "!dist/**/*.map"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc --build"
+  },
+  "dependencies": {
+    "@werken/cloudevents": "workspace:*",
+    "avsc": "^5.7.9"
+  },
+  "peerDependencies": {
+    "@google-cloud/pubsub": "^5.0.0",
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/microservices": "^11.0.0",
+    "@nestjs/testing": "^11.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@nestjs/testing": {
+      "optional": true
+    }
+  }
+}
