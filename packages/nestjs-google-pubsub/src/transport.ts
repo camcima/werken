@@ -63,8 +63,11 @@ export class WerkenPubSubTransport
       serviceName: options.telemetry?.serviceName ?? "werken",
     });
     // Built without a dead-letter publisher until listen() has a client to give it; terminal
-    // messages nack rather than being dropped in the meantime.
-    this.pipeline = this.buildPipeline(undefined);
+    // messages nack rather than being dropped in the meantime. The raw subscription name is
+    // provisional: resolving the prefix here would move an invalid-prefix error from startup to
+    // construction, and listen() replaces this pipeline with one naming the resolved subscription
+    // before any message can arrive.
+    this.pipeline = this.buildPipeline(options.subscription, undefined);
   }
 
   private buildCodec(client: PubSubClientLike): AvroCodec | undefined {
@@ -91,9 +94,13 @@ export class WerkenPubSubTransport
     });
   }
 
-  private buildPipeline(deadLetterPublisher: DeadLetterPublisher | undefined, codec?: AvroCodec): MessagePipeline {
+  private buildPipeline(
+    subscription: string,
+    deadLetterPublisher: DeadLetterPublisher | undefined,
+    codec?: AvroCodec,
+  ): MessagePipeline {
     return new MessagePipeline({
-      subscription: this.options.subscription,
+      subscription,
       resolveHandler: (type) => this.router?.resolve(type) ?? null,
       deadLetterPublisher,
       codec,
@@ -143,7 +150,11 @@ export class WerkenPubSubTransport
 
     this.client = this.options.createClient?.(this.options) ?? this.createDefaultClient();
 
+    // The resolved name, not options.subscription: it is what CloudEventContext.subscription,
+    // telemetry labels and dead-letter provenance report, so all three name the resource that
+    // actually delivered the message.
     this.pipeline = this.buildPipeline(
+      subscriptionName,
       deadLetterTopic === undefined ? undefined : new PubSubDeadLetterPublisher(this.client, deadLetterTopic),
       this.buildCodec(this.client),
     );

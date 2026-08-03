@@ -108,6 +108,75 @@ describe("subscription scoping", () => {
   });
 });
 
+// The prefix is resolved during startup, but the pipeline was built from the raw option, so a
+// handler and the dead-letter provenance both named a subscription that had not delivered anything.
+describe("the resolved name is what the pipeline reports", () => {
+  const scoped = (client: unknown, extra: Record<string, unknown> = {}) =>
+    new WerkenPubSubTransport({
+      projectId: "p",
+      subscription: "orders-consumer",
+      resourcePrefix: "alice",
+      createClient: () => client as never,
+      ...extra,
+    } as never);
+
+  const emit = async (subscription: EventEmitter, attributes: Record<string, string>) => {
+    subscription.emit("message", {
+      id: "m1",
+      attributes,
+      data: Buffer.from("{}"),
+      publishTime: new Date(),
+      ack: vi.fn(),
+      nack: vi.fn(),
+    });
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+  };
+
+  const VALID = {
+    "ce-specversion": "1.0",
+    "ce-id": "01931b7c-3f2a-7000-8000-000000000001",
+    "ce-source": "https://example.test/service",
+    "ce-type": "com.example.thing.happened.v1",
+  };
+
+  test("gives the handler the subscription it actually read from", async () => {
+    const { client, subscription } = fakeClient();
+    const transport = scoped(client);
+    let seen: string | undefined;
+    transport.addHandler(
+      VALID["ce-type"],
+      ((_data: unknown, ctx: { subscription: string }) => {
+        seen = ctx.subscription;
+      }) as never,
+      true,
+    );
+
+    await listen(transport);
+    await emit(subscription, VALID);
+
+    expect(seen).toBe("alice-orders-consumer");
+  });
+
+  test("names the scoped subscription in dead-letter provenance", async () => {
+    const published: Array<Record<string, string>> = [];
+    const { client, subscription } = fakeClient();
+    client.topic = vi.fn(() => ({
+      publishMessage: vi.fn(async (m: { attributes: Record<string, string> }) => {
+        published.push(m.attributes);
+        return undefined;
+      }),
+    })) as never;
+    const transport = scoped(client, { deadLetterTopic: "orders-dead-letters" });
+
+    await listen(transport);
+    // No ce-id, so this fails envelope validation and is dead-lettered.
+    await emit(subscription, { "ce-specversion": "1.0" });
+
+    expect(published[0]?.["werken-dl-source-subscription"]).toBe("alice-orders-consumer");
+  });
+});
+
 describe("startup failures", () => {
   test("fails when the scoped subscription does not exist, naming it exactly", async () => {
     // The library never provisions resources, so a missing scoped subscription must be a loud

@@ -593,9 +593,12 @@ new WerkenPubSubTransport({
 ```
 
 With `WERKEN_RESOURCE_PREFIX=alice` that consumer subscribes to `alice-orders-consumer` and
-dead-letters to `alice-orders-dead-letters`. Set the same value on the publisher so both directions
-are scoped together — **a scoped consumer reading from an unscoped topic is worse than no scoping**,
-because it looks configured and receives nothing.
+dead-letters to `alice-orders-dead-letters`.
+
+The prefix is applied to whatever each side names — a consumer's `subscription` and
+`deadLetterTopic`, a publisher's resolved topic. Those are different resources, so scoping one side
+without deciding what the other does is how you get a consumer that looks configured and receives
+nothing. Pick one of the two topologies below; mixing them does not work.
 
 ### This is for shared development projects only
 
@@ -607,15 +610,19 @@ because it looks configured and receives nothing.
   mean it.
 - **It logs at WARN on startup**, naming the resolved resources. Silent name rewriting is exactly
   what costs an hour to diagnose when someone forgets the env var is set in their shell.
+- **The resolved name is what gets reported**, not the one you configured. `ctx.subscription`, the
+  `subscription` label on metrics, and the `werken-dl-source-subscription` provenance attribute all
+  read `alice-orders-consumer`, so diagnostics name the resource that actually delivered the message.
 - **Invalid prefixes fail at startup**, not at first publish, with the full resolved name in the
   error. Pub/Sub names must be 3-255 characters, start with a letter, avoid a leading `goog`, and
   use only letters, digits, `-`, `.`, `_`, `~`, `+` or `%`.
 
-### You must create the scoped resources yourself
+### Topology 1: shared topic, per-developer subscriptions
 
-**Werken never provisions topics or subscriptions** — that belongs in Terraform or your platform
-catalogue, in dev as much as in production. If the scoped subscription does not exist, startup fails
-naming the exact resource that is missing rather than sitting there healthy and idle:
+Prefix the **consumer only**, and leave `resourcePrefix` unset on the publisher so it keeps writing
+to the shared `orders`. Every developer's subscription hangs off that one topic, which is what lets
+each of them receive their own copy of the same events — including whatever a shared producer, or a
+teammate, publishes.
 
 ```bash
 PREFIX="$USER"
@@ -624,8 +631,32 @@ gcloud pubsub subscriptions create "$PREFIX-orders-consumer" \
   --topic orders --project "$GCP_PROJECT_ID"
 ```
 
-Note the subscription attaches to the **shared** `orders` topic, which is what lets every developer
-receive their own copy of the same published events.
+This is the usual choice: it solves the problem this section opened with — several developers
+stealing messages from one another's subscription — while keeping one shared stream of events.
+
+### Topology 2: fully isolated publisher and consumer
+
+Set the same prefix on **both** sides, and attach each scoped subscription to the **matching scoped
+topic**. A developer then sees only the events they published themselves, which is what you want for
+a test that must not be perturbed by anyone else's traffic.
+
+```bash
+PREFIX="$USER"
+gcloud pubsub topics create "$PREFIX-orders" "$PREFIX-orders-dead-letters" --project "$GCP_PROJECT_ID"
+gcloud pubsub subscriptions create "$PREFIX-orders-consumer" \
+  --topic "$PREFIX-orders" --project "$GCP_PROJECT_ID"
+```
+
+> **The failure mode both topologies exist to avoid** is a scoped subscription attached to a topic
+> nothing publishes to: a prefixed publisher writing to `alice-orders` while `alice-orders-consumer`
+> reads the shared `orders`, or the reverse. Neither errors. The consumer starts, reports healthy,
+> and receives nothing.
+
+### You must create the scoped resources yourself
+
+**Werken never provisions topics or subscriptions** — that belongs in Terraform or your platform
+catalogue, in dev as much as in production. If the scoped subscription does not exist, startup fails
+naming the exact resource that is missing rather than sitting there healthy and idle.
 
 ---
 
