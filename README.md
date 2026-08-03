@@ -862,6 +862,35 @@ Every pipeline log line carries `ce-id`, `ce-type`, `ce-source`, `ce-subject`, `
 > Spans only propagate if a `ContextManager` is registered — the OpenTelemetry Node SDK does this for
 > you. Without one, `context.active()` always returns root and child spans come out unparented.
 
+## Public API
+
+Everything below is exported from `@werken/nestjs-google-pubsub`, documented here, and covered by
+semver. The test harness is at `@werken/nestjs-google-pubsub/testing`.
+
+| Consuming                                                          | Publishing                         | Dead-lettering                         | Idempotency                                                              |
+| ------------------------------------------------------------------ | ---------------------------------- | -------------------------------------- | ------------------------------------------------------------------------ |
+| `WerkenPubSubTransport`                                            | `createEventPublisher`             | `TerminalEventError`                   | `createSqlIdempotencyStore`                                              |
+| `WerkenTransportOptions`                                           | `EventPublisherOptions`            | `PubSubDeadLetterPublisher`            | `InMemoryIdempotencyStore`, `NoopIdempotencyStore`                       |
+| `CloudEventContext`, `IncomingMessage`                             | `PublishRequest`, `PublishOptions` | `DeadLetterPublisher`                  | `IdempotencyStore`, `IdempotencyKey`                                     |
+| `EventHandler`, `Outcome`, `RejectionPolicy`                       | `EncodedPayload`                   | `DeadLetterRequest`, `DeadLetterStage` | `SqlExecutor`, `SqlIdempotencyStoreOptions`                              |
+| `ValidationOptions`, `FlowControlOptions`, `SchemaRegistryOptions` | `PartialPublishError`              | `DEAD_LETTER_ATTRIBUTES`               | `idempotencyKeyToString`, `pruneExpiredSql`, `DEFAULT_IDEMPOTENCY_TABLE` |
+
+Plus the errors worth catching by type — `SchemaDecodeError`, `ResourcePrefixError`,
+`InvalidPatternError`, `AmbiguousPatternError` — and the structural SDK types you need only if you
+supply your own `createClient` or dead-letter publisher: `PubSubClientLike`, `SubscriptionLike`,
+`TopicLike`, `SchemaLike`.
+
+**What is deliberately not exported.** The engine — the message pipeline, pattern router, Avro
+codec, schema revision cache, telemetry facade, context builder and resource-name helpers. They are
+in `src/internal.ts`, which is absent from the package's `exports` map, so Node refuses to resolve
+`@werken/nestjs-google-pubsub/internal` from an installed copy (`ERR_PACKAGE_PATH_NOT_EXPORTED`) —
+this repo's own tests reach it through a build-time alias.
+
+That is a deliberate 0.x decision. A published surface nothing documents is one nobody can change
+safely, and it is cheaper to widen later than to narrow after people depend on it. If you need
+something that is not here, open an issue and it gets exported with documentation and a test rather
+than by accident.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Note that pnpm 11 does not run lifecycle scripts by default,

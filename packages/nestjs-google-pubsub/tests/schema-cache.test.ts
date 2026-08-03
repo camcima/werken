@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import { SchemaRevisionCache } from "@werken/nestjs-google-pubsub";
+import { SchemaRevisionCache } from "@werken/nestjs-google-pubsub/internal";
 
 const REV_A = "projects/p/schemas/thing@aaaa1111";
 const REV_B = "projects/p/schemas/thing@bbbb2222";

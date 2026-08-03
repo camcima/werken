@@ -9,7 +9,7 @@ import {
 } from "@opentelemetry/sdk-metrics";
 import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { createTelemetry } from "@werken/nestjs-google-pubsub";
+import { createTelemetry } from "@werken/nestjs-google-pubsub/internal";
 
 /**
  * Asserted against the real OpenTelemetry SDK with in-memory exporters, not a hand-rolled fake.

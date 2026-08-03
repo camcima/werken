@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { AmbiguousPatternError, InvalidPatternError, PatternRouter } from "@werken/nestjs-google-pubsub";
+import { AmbiguousPatternError, InvalidPatternError } from "@werken/nestjs-google-pubsub";
+import { PatternRouter } from "@werken/nestjs-google-pubsub/internal";
 
 const handler = (name: string) => ({ name }) as unknown as () => void;
 

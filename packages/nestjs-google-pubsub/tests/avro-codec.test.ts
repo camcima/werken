@@ -1,6 +1,7 @@
 import avro from "avsc";
 import { describe, expect, test, vi } from "vitest";
-import { AvroCodec, SchemaDecodeError } from "@werken/nestjs-google-pubsub";
+import { SchemaDecodeError } from "@werken/nestjs-google-pubsub";
+import { AvroCodec } from "@werken/nestjs-google-pubsub/internal";
 
 const WRITER_V1 = {
   type: "record",

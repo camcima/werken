@@ -22,7 +22,8 @@
     "paths": {
       "@werken/cloudevents": ["packages/cloudevents/src/index.ts"],
       "@werken/nestjs-google-pubsub": ["packages/nestjs-google-pubsub/src/index.ts"],
-      "@werken/nestjs-google-pubsub/testing": ["packages/nestjs-google-pubsub/src/testing/index.ts"]
+      "@werken/nestjs-google-pubsub/testing": ["packages/nestjs-google-pubsub/src/testing/index.ts"],
+      "@werken/nestjs-google-pubsub/internal": ["packages/nestjs-google-pubsub/src/internal.ts"]
     }
   },
   "include": ["packages/*/src", "packages/*/tests", "examples/*/src", "examples/*/tests", "*.ts"]

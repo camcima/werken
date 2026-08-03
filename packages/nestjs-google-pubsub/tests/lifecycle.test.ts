@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, test, vi } from "vitest";
-import { WerkenPubSubTransport, toSubscriberOptions } from "@werken/nestjs-google-pubsub";
+import { WerkenPubSubTransport } from "@werken/nestjs-google-pubsub";
+import { toSubscriberOptions } from "@werken/nestjs-google-pubsub/internal";
 import type { IncomingMessage } from "@werken/nestjs-google-pubsub";
 // Type-only: the test imports the value dynamically on purpose, and that binding is not a type.
 import type { Duration as SdkDuration } from "@google-cloud/pubsub";

@@ -18,6 +18,13 @@ export const shared = {
         replacement: fromHere("./packages/nestjs-google-pubsub/src/testing/index.ts"),
       },
       {
+        // Not a published entry point: absent from the package's `exports`, so Node refuses to
+        // resolve it from an installed copy. Tests drive the internals through it while the
+        // published surface stays small enough to document and support.
+        find: /^@werken\/nestjs-google-pubsub\/internal$/,
+        replacement: fromHere("./packages/nestjs-google-pubsub/src/internal.ts"),
+      },
+      {
         find: /^@werken\/nestjs-google-pubsub$/,
         replacement: fromHere("./packages/nestjs-google-pubsub/src/index.ts"),
       },

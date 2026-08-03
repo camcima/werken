@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { ResourcePrefixError, applyResourcePrefix, assertResourcePrefixSafe } from "@werken/nestjs-google-pubsub";
+import { ResourcePrefixError } from "@werken/nestjs-google-pubsub";
+import { applyResourcePrefix, assertResourcePrefixSafe } from "@werken/nestjs-google-pubsub/internal";
 
 /**
  * Rules verified empirically against the Pub/Sub emulator, which enforces the documented

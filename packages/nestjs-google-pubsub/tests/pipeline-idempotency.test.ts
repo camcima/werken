@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
-import { InMemoryIdempotencyStore, MessagePipeline, TerminalEventError } from "@werken/nestjs-google-pubsub";
+import { InMemoryIdempotencyStore, TerminalEventError } from "@werken/nestjs-google-pubsub";
+import { MessagePipeline } from "@werken/nestjs-google-pubsub/internal";
 import type { CloudEventContext, IdempotencyStore, IncomingMessage } from "@werken/nestjs-google-pubsub";
 
 const TYPE = "com.example.thing.happened.v1";

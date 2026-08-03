@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { eventLogFields, withEventFields } from "@werken/nestjs-google-pubsub";
+import { eventLogFields, withEventFields } from "@werken/nestjs-google-pubsub/internal";
 import type { IncomingMessage } from "@werken/nestjs-google-pubsub";
 
 function message(overrides: Partial<IncomingMessage> = {}): IncomingMessage {

@@ -3,13 +3,10 @@ import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-ho
 import { W3CTraceContextPropagator } from "@opentelemetry/core";
 import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import {
-  InMemoryIdempotencyStore,
-  MessagePipeline,
-  TerminalEventError,
-  createTelemetry,
-} from "@werken/nestjs-google-pubsub";
-import type { IncomingMessage, Telemetry } from "@werken/nestjs-google-pubsub";
+import { InMemoryIdempotencyStore, TerminalEventError } from "@werken/nestjs-google-pubsub";
+import { MessagePipeline, createTelemetry } from "@werken/nestjs-google-pubsub/internal";
+import type { IncomingMessage } from "@werken/nestjs-google-pubsub";
+import type { Telemetry } from "@werken/nestjs-google-pubsub/internal";
 
 const TYPE = "com.example.thing.happened.v1";
 const SUBSCRIPTION = "projects/p/subscriptions/s";
