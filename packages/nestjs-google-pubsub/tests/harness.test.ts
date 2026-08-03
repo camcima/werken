@@ -200,3 +200,78 @@ describe("deterministic clock", () => {
     expect(harness.get<ThingStore>(ThingStore).saved[0].ctx.time).toEqual(new Date("2026-08-01T09:30:00.000Z"));
   });
 });
+
+/**
+ * `Promise.all` over several emits is the natural way to test concurrent and duplicate delivery in
+ * a message-processing harness, so the harness has to survive it. It used to hold one global slot
+ * for the message being processed, which credited every dead-letter to whichever emit happened to
+ * run last.
+ */
+describe("concurrent emits", () => {
+  test("attributes each dead-letter to the message it came from", async () => {
+    const harness = await createWerkenTestHarness({ module: WorkerModule });
+
+    try {
+      await Promise.all([
+        harness.emitRaw({ "ce-specversion": "1.0" }, JSON.stringify({ first: true })),
+        harness.emitRaw({ "ce-specversion": "1.0" }, JSON.stringify({ second: true })),
+      ]);
+
+      expect(harness.deadLettered).toHaveLength(2);
+      expect(harness.deadLettered.map((r) => r.body).sort()).toEqual([
+        JSON.stringify({ first: true }),
+        JSON.stringify({ second: true }),
+      ]);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("keeps both records for two indistinguishable messages", async () => {
+    const harness = await createWerkenTestHarness({ module: WorkerModule });
+
+    try {
+      const same = () => harness.emitRaw({ "ce-specversion": "1.0" }, JSON.stringify({ same: true }));
+      await Promise.all([same(), same()]);
+
+      expect(harness.deadLettered).toHaveLength(2);
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
+describe("after the harness stops", () => {
+  // drain() already refused; close() left emit() hanging forever instead, which tells a reader
+  // nothing about what they did wrong.
+  test("close() refuses further emits rather than hanging", async () => {
+    const harness = await createWerkenTestHarness({ module: WorkerModule });
+    await harness.close();
+
+    await expect(harness.emit(TYPE, { hello: "world" })).rejects.toThrow(/closed/);
+  });
+});
+
+describe("the injected clock", () => {
+  test("expires an idempotency marker once time passes the TTL", async () => {
+    let clock = new Date("2026-08-03T10:00:00.000Z");
+    const harness = await createWerkenTestHarness({
+      module: WorkerModule,
+      now: () => clock,
+      idempotency: { ttlMs: 60_000, consumer: "clock-test" },
+    });
+
+    try {
+      await harness.emit(TYPE, { hello: "world" }, { id: "same-event" });
+      await harness.emit(TYPE, { hello: "world" }, { id: "same-event" });
+      expect(harness.get<ThingStore>(ThingStore).saved).toHaveLength(1);
+
+      clock = new Date("2026-08-03T10:02:00.000Z");
+      await harness.emit(TYPE, { hello: "world" }, { id: "same-event" });
+
+      expect(harness.get<ThingStore>(ThingStore).saved).toHaveLength(2);
+    } finally {
+      await harness.close();
+    }
+  });
+});
