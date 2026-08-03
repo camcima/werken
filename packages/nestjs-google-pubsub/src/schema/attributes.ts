@@ -1,13 +1,13 @@
 import type { SchemaMessageMeta } from "./avro-codec.js";
 
 /**
- * Attribute names Pub/Sub sets on a schema-encoded message. Confirmed empirically and against the
- * client library source in docs/spikes/SPIKE-0-pubsub-schema-attrs.md.
+ * Attribute names Pub/Sub sets on a schema-encoded message. Confirmed empirically against the
+ * emulator and against the client library's own source.
  *
- * SPIKE-0 recommends calling `Schema.metadataFromMessage()` rather than hardcoding these. That
- * would make @google-cloud/pubsub a hard runtime import of the decode path, which is otherwise
- * pure and unit-testable without the SDK. This function is the single place that knows the names —
- * if the SDK ever changes them, only this file moves.
+ * The SDK offers `Schema.metadataFromMessage()` for exactly this, and hardcoding the names is a
+ * deliberate trade: calling it would make @google-cloud/pubsub a hard runtime import of the decode
+ * path, which is otherwise pure and unit-testable without the SDK installed. This file is the
+ * single place that knows the names, so if the SDK ever changes them, only this file moves.
  */
 export const SCHEMA_ATTRIBUTES = {
   name: "googclient_schemaname",

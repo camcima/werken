@@ -5,7 +5,7 @@ import type { CloudEventContext } from "./types.js";
  *
  * `consumer` is part of the key on purpose: two services consuming the same event must each
  * process it once, not once between them. `source` is part of it because `id` is only unique
- * within a source (§3.2).
+ * within a source, per CloudEvents 1.0.
  */
 export interface IdempotencyKey {
   readonly consumer: string;
@@ -25,10 +25,19 @@ export interface IdempotencyStore {
   has(key: IdempotencyKey, ctx: CloudEventContext): Promise<boolean>;
 }
 
-/** Stable string form of a key, for stores that need a single-column identity. */
+/**
+ * Stable string form of a key, for stores that need a single-column identity.
+ *
+ * Joined on the ASCII unit separator rather than a space: `ce-source` is a URI-reference and
+ * `consumer` is caller-supplied, so a printable separator that either could contain would let two
+ * different keys flatten to one string — and the collision presents as an event silently dropped
+ * as a duplicate, not as an error.
+ */
 export function idempotencyKeyToString(key: IdempotencyKey): string {
-  return `${key.consumer} ${key.source} ${key.id}`;
+  return [key.consumer, key.source, key.id].join(KEY_SEPARATOR);
 }
+
+const KEY_SEPARATOR = "\u001f";
 
 // ---------------------------------------------------------------------------
 // SQL store
@@ -126,7 +135,7 @@ export function createSqlIdempotencyStore(options: SqlIdempotencyStoreOptions): 
 /**
  * SQL to delete expired markers. Run it from your own scheduled job — deliberately not a timer the
  * library starts, because a library quietly issuing DELETEs against a consumer's database is a
- * surprise nobody wants (§5.4).
+ * surprise nobody wants.
  */
 export function pruneExpiredSql(table: string = DEFAULT_IDEMPOTENCY_TABLE): string {
   return `DELETE FROM ${assertIdentifier(table)} WHERE expires_at < now()`;

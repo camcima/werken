@@ -43,8 +43,9 @@ export interface WerkenTestHarnessOptions {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- provider tokens are untyped in Nest
   readonly overrides?: Array<{ provide: any; useValue: any }>;
   /**
-   * Schema handling. `passthrough` sends payloads as plain JSON with no schema resolution.
-   * `strict` (M5) will decode against local .avsc files.
+   * Schema handling. `passthrough` — the only mode — sends payloads as plain JSON with no schema
+   * resolution, which is what most consumer tests want. Exercise real Avro decoding against the
+   * emulator instead; see tests/integration/schema.integration.test.ts.
    */
   readonly schemas?: "passthrough";
   /** Default `ce-source` for emitted events. */
@@ -68,7 +69,7 @@ export interface WerkenTestHarness {
   readonly deadLettered: readonly DeadLetteredRecord[];
   /** Resolve a provider from the testing module — useful for asserting on fakes. */
   get<T>(token: unknown): T;
-  /** Simulate shutdown drain (§5.6). */
+  /** Simulate the shutdown drain: stop taking messages and wait for in-flight handlers. */
   drain(): Promise<void>;
   close(): Promise<void>;
 }
@@ -90,6 +91,12 @@ export async function createWerkenTestHarness(options: WerkenTestHarnessOptions)
   const source = options.source ?? DEFAULT_SOURCE;
 
   const subscription = new InMemorySubscription();
+  /**
+   * The message currently being processed, so a dead-letter publish can be attributed back to it.
+   * A single slot, which is sound because the harness drives one message at a time: `emit()` does
+   * not resolve until its message is settled. Emitting several without awaiting them would
+   * misattribute dead-letters.
+   */
   let pending: HarnessRecord | undefined;
   const client: PubSubClientLike = {
     subscription: () => subscription,
@@ -132,8 +139,15 @@ export async function createWerkenTestHarness(options: WerkenTestHarnessOptions)
   await app.listen();
 
   let sequence = 0;
+  let drained = false;
 
   async function push(attributes: Record<string, string>, body: Buffer, extra: EmitOptions): Promise<void> {
+    // After drain() the transport has stopped listening, so the message would reach nothing and the
+    // promise below would never settle. A hung test tells you nothing; this says what you did.
+    if (drained) {
+      throw new Error("werken: harness has been drained — emit before calling drain(), or build a new harness");
+    }
+
     const record: HarnessRecord = {
       type: attributes["ce-type"],
       id: attributes["ce-id"] ?? `harness-${++sequence}`,
@@ -194,6 +208,7 @@ export async function createWerkenTestHarness(options: WerkenTestHarnessOptions)
     },
 
     async drain() {
+      drained = true;
       await transport.close();
     },
 

@@ -11,7 +11,7 @@ export function buildContext(
     source: envelope.source,
     type: envelope.type,
     subject: envelope.subject,
-    // §3.2: ce-time is the occurrence time and defaults to publish time when the producer omits it.
+    // ce-time is the occurrence time, and falls back to the publish time when the producer omits it.
     time: envelope.time ?? message.publishTime,
     ingestionTime: envelope.ingestiontime,
     dataschema: envelope.dataschema,

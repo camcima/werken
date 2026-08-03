@@ -32,8 +32,9 @@ export interface WerkenTransportEvents extends Record<string, Function> {
  * Nest custom transport for Google Cloud Pub/Sub.
  *
  * `on()` and `unwrap()` are abstract on Nest's `Server` base class — note they are NOT part of
- * `CustomTransportStrategy`, which requires only `listen()`/`close()`. Verified against
- * @nestjs/microservices 11.1.28; see docs/spikes/nest-11-transport-typings.md.
+ * `CustomTransportStrategy`, which requires only `listen()`/`close()`. Both must therefore be
+ * implemented here even though nothing in the transport contract asks for them. Verified against
+ * @nestjs/microservices 11.1.28.
  */
 export class WerkenPubSubTransport
   extends Server<WerkenTransportEvents, WerkenTransportStatus>
@@ -49,7 +50,7 @@ export class WerkenPubSubTransport
   private pipeline: MessagePipeline;
   private readonly idempotencyStore: IdempotencyStore;
   private readonly telemetry: Telemetry;
-  /** Built once at listen(); §4.5 forbids re-scanning patterns on every message. */
+  /** Built once at listen(), so patterns are not re-scanned for every message. */
   private router?: PatternRouter;
 
   constructor(private readonly options: WerkenTransportOptions) {
@@ -191,7 +192,7 @@ export class WerkenPubSubTransport
   }
 
   /**
-   * Drain sequence (§5.6). Nest calls this on shutdown, which needs
+   * Drain sequence. Nest calls this on shutdown, which needs
    * `app.enableShutdownHooks()` in the consumer's bootstrap — without it, scale-down kills
    * in-flight work and produces duplicates on every event.
    */
@@ -251,6 +252,12 @@ export class WerkenPubSubTransport
     this.listeners.set(event, existing);
   }
 
+  /**
+   * Returns the underlying `Subscription` — not the `PubSub` client, which is what `unwrap()`
+   * yields on most other Nest transports. The subscription is the thing this transport drives, and
+   * the client is reachable from it; the deviation is called out because it is easy to assume
+   * otherwise.
+   */
   unwrap<T>(): T {
     if (this.subscription === undefined) {
       throw new Error("werken: transport is not listening — call listen() before unwrap()");
@@ -259,11 +266,15 @@ export class WerkenPubSubTransport
   }
 
   /**
-   * Readiness for Cloud Run worker pools, which have no HTTP endpoint (§7.1). Prefer the `status`
+   * Readiness for Cloud Run worker pools, which have no HTTP endpoint. Prefer the `status`
    * observable Nest's Server already exposes when you want to react to changes.
    */
   isHealthy(): boolean {
-    return this.subscription !== undefined;
+    // `isOpen === false` means the SDK has given up on the stream. Reporting healthy then leaves a
+    // worker sitting in the pool receiving nothing, which is precisely what a health check is for.
+    // Deliberately not latched on 'error' events: most are transient and the SDK reconnects, so
+    // failing on those would pull healthy workers out of rotation.
+    return this.subscription !== undefined && this.subscription.isOpen !== false;
   }
 
   /** The SDK's Duration class, or undefined if the peer dependency is not installed. */

@@ -14,13 +14,6 @@ overrides:
 importers:
 
   .:
-    dependencies:
-      avsc:
-        specifier: ^5.7.9
-        version: 5.7.9
-      uuidv7:
-        specifier: ^1.2.1
-        version: 1.2.1
     devDependencies:
       '@commitlint/cli':
         specifier: ^21.2.1

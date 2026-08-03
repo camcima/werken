@@ -105,6 +105,15 @@ describe("createWerkenTestHarness", () => {
     expect(store.saved[0].ctx.id).not.toBe(store.saved[1].ctx.id);
   });
 
+  // Once drained, the transport has stopped listening: the emitted message reaches nothing and the
+  // promise waiting for its ack or nack never settles. A hung test says nothing about what broke.
+  test("fails loudly when emitting after drain rather than hanging", async () => {
+    harness = await createWerkenTestHarness({ module: WorkerModule });
+    await harness.drain();
+
+    await expect(harness.emit(TYPE, { n: 1 })).rejects.toThrow(/drain/i);
+  });
+
   test("needs no network, credentials or emulator", async () => {
     delete process.env.PUBSUB_EMULATOR_HOST;
     harness = await createWerkenTestHarness({ module: WorkerModule });

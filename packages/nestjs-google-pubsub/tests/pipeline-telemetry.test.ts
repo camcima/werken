@@ -37,6 +37,7 @@ function message(overrides: Partial<IncomingMessage> = {}): IncomingMessage {
 function recordingTelemetry() {
   const outcomes: Array<{ type: string; outcome: string }> = [];
   const messageSpans: string[] = [];
+  const durations: Array<{ type: string; ms: number }> = [];
   const telemetry: Telemetry = {
     withMessageSpan: (input, work) => {
       messageSpans.push(input.envelope.id);
@@ -47,13 +48,15 @@ function recordingTelemetry() {
     recordOutcome: (type, outcome) => {
       outcomes.push({ type, outcome });
     },
-    recordHandlerDuration: () => {},
+    recordHandlerDuration: (type, ms) => {
+      durations.push({ type, ms });
+    },
     recordDecodeFailure: () => {},
     recordSchemaCache: () => {},
     addInFlight: () => {},
     recordLateness: () => {},
   };
-  return { telemetry, outcomes, messageSpans };
+  return { telemetry, outcomes, messageSpans, durations };
 }
 
 describe("outcome metric wiring", () => {
@@ -146,6 +149,26 @@ describe("outcome metric wiring", () => {
     await pipeline.handle(message({ attributes: { "ce-specversion": "1.0" } }));
 
     expect(outcomes).toEqual([]);
+  });
+});
+
+describe("handler duration metric", () => {
+  // A terminal failure is often the slowest thing a handler does — the timeout that finally gave
+  // up — so leaving it out of the histogram hides exactly the tail worth seeing.
+  test("records handler duration for a terminal failure, not only for success and nack", async () => {
+    const { telemetry, durations } = recordingTelemetry();
+    const pipeline = new MessagePipeline({
+      subscription: SUBSCRIPTION,
+      resolveHandler: () => () => {
+        throw new TerminalEventError("will never resolve");
+      },
+      deadLetterPublisher: { publish: async () => {} },
+      telemetry,
+    });
+
+    await pipeline.handle(message());
+
+    expect(durations.map((d) => d.type)).toEqual([TYPE]);
   });
 });
 

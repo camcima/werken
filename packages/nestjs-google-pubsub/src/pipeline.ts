@@ -30,7 +30,10 @@ export interface ValidationOptions {
 
 export interface MessagePipelineOptions {
   readonly subscription: string;
-  /** Exact-match handler lookup. Wildcard precedence arrives in M10. */
+  /**
+   * Resolves the handler for a `ce-type`, or null when this consumer has none. The transport
+   * supplies a `PatternRouter`, which prefers an exact pattern over a wildcard one.
+   */
   readonly resolveHandler: (pattern: string) => EventHandler | null;
   readonly deadLetterPublisher?: DeadLetterPublisher;
   /** Avro schema resolution and decode. Without it, bodies are parsed as plain JSON. */
@@ -50,8 +53,11 @@ export interface MessagePipelineOptions {
 }
 
 /**
- * Ordered stages a message passes through (§5.2). M4 covers envelope, routing, handler invocation
- * and outcomes; schema decode, idempotency and telemetry slot in later.
+ * How long a processed-event marker is retained: 7 days.
+ *
+ * The bound that matters is how long a duplicate can plausibly arrive after the original — a
+ * subscription's own retention plus any replay window — so this is deliberately far longer than a
+ * redelivery cycle.
  */
 export const DEFAULT_IDEMPOTENCY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -122,7 +128,7 @@ export class MessagePipeline {
       return outcome;
     }
 
-    // The message span opens once a handler is known (§5.2), covering the idempotency check,
+    // The message span opens once a handler is known, covering the idempotency check,
     // decode, the handler and the idempotency record — parented on the producer's ce-traceparent
     // so the werken.decode/werken.handler child spans join the producer's trace.
     const work = () => this.dispatch(handler, envelope, message, now);
@@ -193,6 +199,11 @@ export class MessagePipeline {
       await this.record(key, ctx);
       return "ack";
     } catch (error) {
+      // Recorded here rather than per-branch so a terminal failure counts too — those are often the
+      // slowest thing a handler does, and the tail is the reason to keep a histogram at all. Taken
+      // before the dead-letter publish below, so it measures the handler and not the publish.
+      telemetry?.recordHandlerDuration(envelope.type, Date.now() - startedAt);
+
       const terminal = asTerminalFailure(error);
       if (terminal !== null) {
         const outcome = await this.reject(message, {
@@ -207,7 +218,6 @@ export class MessagePipeline {
         if (outcome === "dead-letter") await this.record(key, ctx);
         return outcome;
       }
-      telemetry?.recordHandlerDuration(envelope.type, Date.now() - startedAt);
       this.options.logger?.error(withEventFields(`werken: handler failed: ${asMessage(error)}`, message));
       return "nack";
     }

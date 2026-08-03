@@ -1,6 +1,6 @@
 /**
  * Machine-readable reason an envelope was rejected. Kept precise so callers can route on the
- * cause rather than parsing messages — §4.4 outcome policies branch on this.
+ * cause rather than parsing messages — the transport's outcome policies branch on it.
  */
 export type EnvelopeErrorCode = "missing-attribute" | "unsupported-specversion" | "invalid-attribute";
 

@@ -4,17 +4,24 @@ Date: 2026-08-03. Scope: full source of `@werken/cloudevents` and `@werken/nestj
 the test harness, the example, build/CI tooling, and all documentation (README, docs/, package
 metadata). Reviewed at commit `e0d620a`.
 
-> **Status:** all eight high- and medium-severity findings (#1–#8) were fixed on 2026-08-03, each
-> with a regression test written first — see `tests/integration/dist-smoke.integration.test.ts`,
+> **Status: everything below is fixed.** All findings — high, medium and low severity, plus the
+> documentation-parity gaps — were addressed on 2026-08-03. Every behavioural fix has a regression
+> test that was watched failing first; see `tests/integration/dist-smoke.integration.test.ts`,
 > `tests/pipeline-telemetry.test.ts`, and the new cases in `tests/harness.test.ts`,
-> `tests/lifecycle.test.ts`, `tests/pattern-router.test.ts` and `tests/publisher.test.ts`. The low
-> severity items and the documentation-parity gaps in §Docs remain open. The sections below
-> describe the code as reviewed.
+> `tests/lifecycle.test.ts`, `tests/pattern-router.test.ts`, `tests/publisher.test.ts` and
+> `tests/idempotency.test.ts`. The sections below describe the code as originally reviewed and are
+> kept as the rationale for the changes.
 >
-> Two fixes changed behaviour worth knowing about: `publishBatch` now issues all publishes before
-> awaiting (still in request order) and throws `PartialPublishError` on partial failure, and
-> `PatternRouter` no longer caches at all when no wildcard is registered, since exact lookups are
-> already O(1).
+> Three fixes changed behaviour worth knowing about. `publishBatch` now issues all publishes before
+> awaiting (still in request order) and throws `PartialPublishError` on partial failure.
+> `PatternRouter` no longer caches when no wildcard is registered, since exact lookups are already
+> O(1). And `idempotencyKeyToString` now joins on `\u001f` rather than a space, which changes the
+> stored key for single-column stores — relevant only to adapters built against the pre-fix format.
+>
+> One item from §Design observations is deliberately **not** done: `idempotency.consumer` still
+> falls back to `"werken"` when a store is configured without one, so two services sharing a store
+> and both defaulting would dedupe against each other. Making that a warning or a startup failure
+> is a behaviour change worth deciding on separately.
 
 ## Verdict
 

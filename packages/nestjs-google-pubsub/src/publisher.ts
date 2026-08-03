@@ -76,7 +76,7 @@ export interface EventPublisherOptions {
   topicResolver: (type: string) => string | undefined;
   /**
    * Encodes the payload. Without one, bodies are plain JSON — which Pub/Sub rejects on a topic
-   * with a schema attached, since its JSON encoding is Avro JSON (see SPIKE-1).
+   * with a schema attached, since Pub/Sub's JSON encoding is Avro JSON rather than plain JSON.
    */
   encode?: (type: string, data: unknown) => Buffer;
   /** Derives the ordering key from `subject` and enables ordering on the topic. */

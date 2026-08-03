@@ -344,6 +344,24 @@ describe("drain on shutdown", () => {
     await transport.close();
     expect(transport.isHealthy()).toBe(false);
   });
+
+  // The SDK closes the stream itself when it gives up on it. A worker that keeps reporting healthy
+  // then sits in the pool receiving nothing, which is the failure this check exists to catch.
+  test("reports unhealthy once the SDK has closed the stream underneath it", async () => {
+    const { subscription, client } = fakeClient();
+    const transport = new WerkenPubSubTransport({
+      projectId: "p",
+      subscription: "s",
+      createClient: () => client as never,
+    });
+
+    await listenReady(transport);
+    expect(transport.isHealthy()).toBe(true);
+
+    (subscription as unknown as { isOpen: boolean }).isOpen = false;
+
+    expect(transport.isHealthy()).toBe(false);
+  });
 });
 
 describe("stream errors", () => {

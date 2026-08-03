@@ -35,7 +35,7 @@ interface WildcardRoute {
 }
 
 /**
- * Routes a `ce-type` to exactly one handler (§4.5).
+ * Routes a `ce-type` to exactly one handler.
  *
  * Supports three shapes: an exact type, a suffix wildcard (`com.example.*`, matching one or more
  * trailing segments), and the catch-all (`*`). Precedence is exact first, then the wildcard with
@@ -143,8 +143,8 @@ function assertSupported(pattern: string): void {
 
 /**
  * Nest chains duplicate event handlers through `.next` rather than replacing them, so a second
- * `@EventPattern` for the same type registers successfully and then never runs — §4.5 requires
- * exactly one handler per message.
+ * `@EventPattern` for the same type registers successfully and then never runs. Exactly one handler
+ * per message is the contract, so the ambiguity is refused at startup rather than at runtime.
  */
 function assertNotChained(pattern: string, handler: EventHandler): void {
   if ((handler as { next?: unknown }).next === undefined) return;

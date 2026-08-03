@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import { InMemoryIdempotencyStore, NoopIdempotencyStore } from "@werken/nestjs-google-pubsub";
+import { InMemoryIdempotencyStore, NoopIdempotencyStore, idempotencyKeyToString } from "@werken/nestjs-google-pubsub";
 import type { IdempotencyKey } from "@werken/nestjs-google-pubsub";
 
 const key = (overrides: Partial<IdempotencyKey> = {}): IdempotencyKey => ({
@@ -100,5 +100,21 @@ describe("prune", () => {
     await store.tryRecord(key(), 60_000);
 
     expect(store.prune()).toBe(0);
+  });
+});
+
+describe("key identity", () => {
+  // The string form is what single-column stores use as their key — the README's Redis and Mongo
+  // adapters included — so two different keys flattening to one string would silently drop the
+  // second event as an already-processed duplicate.
+  test("keeps keys distinct when a field boundary shifts between them", () => {
+    const a = idempotencyKeyToString({ consumer: "orders svc", source: "https://x.test", id: "1" });
+    const b = idempotencyKeyToString({ consumer: "orders", source: "svc https://x.test", id: "1" });
+
+    expect(a).not.toBe(b);
+  });
+
+  test("is stable for the same key", () => {
+    expect(idempotencyKeyToString(key())).toBe(idempotencyKeyToString(key()));
   });
 });

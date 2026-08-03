@@ -1,7 +1,7 @@
 import type { IncomingMessage } from "./types.js";
 
 /**
- * Fields §5.5 requires on every pipeline log line.
+ * Fields carried on every pipeline log line.
  *
  * Emitted as JSON appended to the message rather than through a logger interface of our own: Cloud
  * Logging and most aggregators parse embedded JSON into queryable fields, and it keeps the library

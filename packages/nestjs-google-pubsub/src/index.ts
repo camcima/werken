@@ -23,7 +23,7 @@ export type { WerkenTransportEvents, WerkenTransportStatus } from "./transport.j
 export type { SchemaCacheStats, SchemaRevisionCacheOptions } from "./schema/cache.js";
 export type { AvroCodecOptions, SchemaMessageMeta } from "./schema/avro-codec.js";
 export { buildContext } from "./context.js";
-export { MessagePipeline } from "./pipeline.js";
+export { DEFAULT_IDEMPOTENCY_TTL_MS, MessagePipeline } from "./pipeline.js";
 export {
   DEAD_LETTER_ATTRIBUTES,
   PubSubDeadLetterPublisher,

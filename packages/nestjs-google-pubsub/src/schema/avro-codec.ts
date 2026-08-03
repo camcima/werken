@@ -2,7 +2,7 @@ import avro from "avsc";
 import { SchemaRevisionCache } from "./cache.js";
 import type { SchemaCacheStats } from "./cache.js";
 
-/** Schema metadata Pub/Sub attaches to a message. See docs/spikes/SPIKE-0-pubsub-schema-attrs.md. */
+/** Schema metadata Pub/Sub attaches to a message. See `SCHEMA_ATTRIBUTES` for the wire names. */
 export interface SchemaMessageMeta {
   readonly name?: string;
   readonly revision?: string;
@@ -24,7 +24,7 @@ export interface AvroCodecOptions {
   fetchWriterSchema: (revisionQualifiedName: string) => Promise<string>;
   /**
    * The compiled reader type for a schema, from the types the consumer imports — never from the
-   * registry (§5.3). Returning undefined means this consumer cannot read the schema at all.
+   * registry. Returning undefined means this consumer cannot read the schema at all.
    */
   readerTypeFor: (schemaName: string) => avro.Type | undefined;
   /** Fail closed when the writer schema cannot be fetched. Default true. */
@@ -83,7 +83,7 @@ export class AvroCodec {
 
     try {
       if (isJsonEncoding(meta.encoding)) {
-        // SPIKE-1: Pub/Sub's JSON encoding is standard Avro JSON, where a nullable union is
+        // Pub/Sub's JSON encoding is standard Avro JSON, where a nullable union is
         // {"string":"v"} and not "v". fromString applies those rules; JSON.parse would not.
         // Round-tripping through the writer's binary form is how the resolver gets applied.
         const writerValue = resolved.writerType.fromString(body.toString("utf8"));

@@ -15,13 +15,18 @@ export interface SubscriptionLike {
   on(event: string, listener: (...args: any[]) => void): unknown;
   /** Called with "message" to stop taking work while the error listener stays attached. */
   removeAllListeners(event?: string): unknown;
+  /**
+   * False once the SDK has given up on the stream. Optional because it is a real `Subscription`
+   * getter that a hand-rolled test double need not provide; absent is treated as open.
+   */
+  readonly isOpen?: boolean;
   close(): Promise<void> | void;
 }
 
 export interface SchemaRegistryOptions {
   /**
    * Compiled reader type for a schema name, from the types this consumer imports — never from the
-   * registry (§5.3). Returning undefined means the consumer cannot read that schema at all.
+   * registry. Returning undefined means the consumer cannot read that schema at all.
    */
   readerTypeFor: (schemaName: string) => avro.Type | undefined;
   /** Fail closed if a writer schema cannot be fetched. Default true. */
@@ -46,7 +51,7 @@ export interface SchemaLike {
 export interface PubSubClientLike {
   subscription(name: string, options?: unknown): SubscriptionLike;
   topic(name: string, options?: unknown): TopicLike;
-  /** Accepts a revision-qualified name (`name@revisionId`) — confirmed in SPIKE-0. */
+  /** Accepts a revision-qualified name (`name@revisionId`), verified against the emulator. */
   schema?(name: string): SchemaLike;
   close(): Promise<void> | void;
 }
@@ -67,7 +72,10 @@ export interface WerkenTransportOptions {
   flowControl?: FlowControlOptions;
 
   streaming?: {
-    /** Defaults to 1. Raising it interacts with ordering — see docs/ordering.md. */
+    /**
+     * Defaults to 1. More streams mean more concurrent delivery, but Pub/Sub still serialises
+     * delivery per ordering key, so raising this does not speed up a single hot key.
+     */
     maxStreams?: number;
   };
 
@@ -118,7 +126,7 @@ export interface WerkenTransportOptions {
   apiEndpoint?: string;
 
   /**
-   * Topic to publish terminal messages to (§4.4). Deliberately explicit rather than relying on the
+   * Topic to publish terminal messages to. Deliberately explicit rather than relying on the
    * subscription's own dead-letter policy, which only triggers after every retry is exhausted.
    * Without it, terminal messages nack rather than being silently dropped.
    */
@@ -129,7 +137,7 @@ export interface WerkenTransportOptions {
 
   /**
    * Duplicate suppression. Omitting it installs a no-op store that warns loudly at startup rather
-   * than silently reprocessing duplicates (§5.4).
+   * than silently reprocessing duplicates.
    */
   idempotency?: {
     /** Identifies this consumer in the key, so two services each process an event once. */
@@ -189,8 +197,9 @@ export interface SubscriberOptionsLike {
 /**
  * Translates Werken's broker-neutral option names into the Node SDK's.
  *
- * This mapping is not cosmetic. §4.1 names these after the Pub/Sub concepts (`maxOutstandingMessages`,
- * as the Python and Java clients do), but the Node client's own `FlowControlOptions` uses
+ * This mapping is not cosmetic. Werken names these after the Pub/Sub concepts themselves
+ * (`maxOutstandingMessages`, as the Python and Java clients do), but the Node client's own
+ * `FlowControlOptions` uses
  * `maxMessages`/`maxBytes`. Passing our names straight through means the SDK silently ignores them
  * and applies its own far larger defaults — flow control that looks configured and is not.
  *
