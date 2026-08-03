@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { toPubSubAttributes } from "@werken/cloudevents";
 import { DEAD_LETTER_ATTRIBUTES, TerminalEventError, WerkenPubSubTransport } from "@werken/nestjs-google-pubsub";
 import type { PubSubClientLike } from "@werken/nestjs-google-pubsub";
+import { skipUnlessAvailable } from "./requires.js";
 
 const EMULATOR = process.env.PUBSUB_EMULATOR_HOST;
 const PROJECT = process.env.PUBSUB_PROJECT_ID ?? "werken-it";
@@ -16,7 +17,7 @@ const TYPE = "com.example.terminal.v1";
  * alongside the provenance ones, and whether the original is really acked rather than redelivered,
  * are contracts with the broker.
  */
-describe.skipIf(!EMULATOR)("dead-lettering against the emulator", () => {
+describe.skipIf(skipUnlessAvailable("PUBSUB_EMULATOR_HOST", EMULATOR))("dead-lettering against the emulator", () => {
   const suffix = Date.now();
   const topicId = `werken-dl-src-${suffix}`;
   const subscriptionId = `werken-dl-sub-${suffix}`;

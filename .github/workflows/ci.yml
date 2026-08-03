@@ -95,6 +95,10 @@ jobs:
           PUBSUB_EMULATOR_HOST: localhost:8085
           PUBSUB_PROJECT_ID: werken-ci
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/werken_test
+          # Turns a skipped integration test into a failure. Without it, an emulator that failed to
+          # start would skip all seven files and still report success, indistinguishable from a
+          # healthy run because the unit job legitimately skips the same files.
+          WERKEN_REQUIRE_INTEGRATION: "1"
       # Uploaded under its own flag so the project total is the union of both suites. Without this
       # half, code reachable only against a real broker or database — the default client, the SQL
       # store — counts as uncovered, and the reported number cannot distinguish "tested in the

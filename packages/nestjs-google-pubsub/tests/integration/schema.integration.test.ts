@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { toPubSubAttributes } from "@werken/cloudevents";
 import { WerkenPubSubTransport } from "@werken/nestjs-google-pubsub";
 import type { PubSubClientLike } from "@werken/nestjs-google-pubsub";
+import { skipUnlessAvailable } from "./requires.js";
 
 const EMULATOR = process.env.PUBSUB_EMULATOR_HOST;
 const PROJECT = process.env.PUBSUB_PROJECT_ID ?? "werken-it";
@@ -23,7 +24,7 @@ const READER = avro.Type.forSchema(SCHEMA as avro.Schema);
  * End-to-end schema resolution against the emulator: a real schema, a real schema-attached topic,
  * real googclient_* attributes, and a real Schema Service fetch by revision.
  */
-describe.skipIf(!EMULATOR)("schema resolution against the emulator", () => {
+describe.skipIf(skipUnlessAvailable("PUBSUB_EMULATOR_HOST", EMULATOR))("schema resolution against the emulator", () => {
   const suffix = Date.now();
   const schemaId = `werken-it-schema-${suffix}`;
   const topicId = `werken-it-schema-topic-${suffix}`;

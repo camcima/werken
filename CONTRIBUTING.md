@@ -40,16 +40,34 @@ raise it rather than adding the term to the denylist.
 
 ## Tests
 
-Test-driven: write the failing test first. Integration tests run against the Pub/Sub **emulator**,
-which supports schemas, so no GCP project or credentials are needed:
+Test-driven: write the failing test first.
+
+The suite is split in two, and each half runs in its own CI job:
+
+| Command                     | Covers                | Needs                  |
+| --------------------------- | --------------------- | ---------------------- |
+| `pnpm test`                 | unit tests            | nothing                |
+| `pnpm run test:integration` | the integration suite | `docker compose up -d` |
+
+`pnpm test` reports the integration files as **skipped**, which is expected: they need a broker and
+a database, and a bare unit run has neither. Nothing is skipped in the half that owns them —
+`pnpm run test:integration` sets `WERKEN_REQUIRE_INTEGRATION=1`, which turns a skip into a failure
+rather than letting it pass quietly. CI sets the same flag, so the integration job cannot go green
+without actually running.
+
+Integration tests use the Pub/Sub **emulator**, which supports schemas, so no GCP project or
+credentials are needed:
 
 ```bash
-docker run -d --name pubsub-emu -p 8085:8085 \
-  gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators \
-  gcloud beta emulators pubsub start --project=werken-ci --host-port=0.0.0.0:8085
-
-PUBSUB_EMULATOR_HOST=localhost:8085 pnpm vitest run packages/*/tests/integration
+docker compose up -d           # Pub/Sub emulator + Postgres, images matching CI
+pnpm run build                 # the SIGTERM and dist-smoke tests run against dist/
+pnpm run test:integration
+docker compose down
 ```
+
+The compose Postgres publishes on **55432**, not 5432, because a developer machine very often
+already runs one there. That collision is silent — the container simply fails to publish and the
+tests then talk to your database instead.
 
 ## Commits
 

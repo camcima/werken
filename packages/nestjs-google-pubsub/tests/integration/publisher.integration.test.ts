@@ -3,6 +3,7 @@ import avro from "avsc";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { createEventPublisher, WerkenPubSubTransport } from "@werken/nestjs-google-pubsub";
 import type { CloudEventContext, PubSubClientLike } from "@werken/nestjs-google-pubsub";
+import { skipUnlessAvailable } from "./requires.js";
 
 const EMULATOR = process.env.PUBSUB_EMULATOR_HOST;
 const PROJECT = process.env.PUBSUB_PROJECT_ID ?? "werken-it";
@@ -25,7 +26,7 @@ const AVRO_TYPE = avro.Type.forSchema(SCHEMA as avro.Schema);
  * what I intended. Whether Pub/Sub accepts the encoding, preserves the attributes, and whether the
  * transport can read back what the publisher wrote, are contracts with the broker.
  */
-describe.skipIf(!EMULATOR)("publisher against the emulator", () => {
+describe.skipIf(skipUnlessAvailable("PUBSUB_EMULATOR_HOST", EMULATOR))("publisher against the emulator", () => {
   const suffix = Date.now();
   const topicId = `werken-pub-topic-${suffix}`;
   const subscriptionId = `werken-pub-sub-${suffix}`;

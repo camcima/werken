@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { PubSub } from "@google-cloud/pubsub";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { toPubSubAttributes } from "@werken/cloudevents";
+import { skipUnlessAvailable } from "./requires.js";
 
 const EMULATOR = process.env.PUBSUB_EMULATOR_HOST;
 const PROJECT = process.env.PUBSUB_PROJECT_ID ?? "werken-it";
@@ -15,7 +16,7 @@ const WORKER = fileURLToPath(new URL("./sigterm-worker.mjs", import.meta.url));
  * because the failure it guards against is the single most likely source of production duplicates
  * and the least likely thing to be caught by accident.
  */
-describe.skipIf(!EMULATOR)("SIGTERM mid-flight", () => {
+describe.skipIf(skipUnlessAvailable("PUBSUB_EMULATOR_HOST", EMULATOR))("SIGTERM mid-flight", () => {
   const suffix = Date.now();
   const topicId = `werken-sigterm-topic-${suffix}`;
   const subscriptionId = `werken-sigterm-sub-${suffix}`;

@@ -4,6 +4,7 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { createSqlIdempotencyStore, pruneExpiredSql } from "@werken/nestjs-google-pubsub";
 import type { CloudEventContext, IdempotencyKey, SqlExecutor } from "@werken/nestjs-google-pubsub";
+import { skipUnlessAvailable } from "./requires.js";
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const SCHEMA_SQL = fileURLToPath(new URL("../../../../docs/idempotency-schema.sql", import.meta.url));
@@ -17,7 +18,7 @@ const SCHEMA_SQL = fileURLToPath(new URL("../../../../docs/idempotency-schema.sq
  * whether the DDL we ship even applies. Those are contracts with Postgres, so they are tested
  * against Postgres.
  */
-describe.skipIf(!DATABASE_URL)("SQL idempotency store against Postgres", () => {
+describe.skipIf(skipUnlessAvailable("DATABASE_URL", DATABASE_URL))("SQL idempotency store against Postgres", () => {
   const pool = new Pool({ connectionString: DATABASE_URL });
   const ctx = {} as CloudEventContext;
 

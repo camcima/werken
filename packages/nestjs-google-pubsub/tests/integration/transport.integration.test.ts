@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { toPubSubAttributes } from "@werken/cloudevents";
 import { WerkenPubSubTransport } from "@werken/nestjs-google-pubsub";
 import type { CloudEventContext, PubSubClientLike } from "@werken/nestjs-google-pubsub";
+import { skipUnlessAvailable } from "./requires.js";
 
 const EMULATOR = process.env.PUBSUB_EMULATOR_HOST;
 const PROJECT = process.env.PUBSUB_PROJECT_ID ?? "werken-it";
@@ -12,7 +13,7 @@ const TYPE = "com.example.thing.happened.v1";
  * Exercises the real @google-cloud/pubsub client against the emulator — no GCP project,
  * credentials or spend. Skipped when the emulator is not running so `pnpm test` stays green.
  */
-describe.skipIf(!EMULATOR)("transport against the Pub/Sub emulator", () => {
+describe.skipIf(skipUnlessAvailable("PUBSUB_EMULATOR_HOST", EMULATOR))("transport against the Pub/Sub emulator", () => {
   const suffix = Date.now();
   const topicId = `werken-it-topic-${suffix}`;
   const subscriptionId = `werken-it-sub-${suffix}`;
