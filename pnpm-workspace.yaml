@@ -17,9 +17,13 @@ linkWorkspacePackages: true
 #    running, taking the local quality gates with them.
 #  - protobufjs: transitive, via @google-cloud/pubsub. Allowed rather than refused because it is
 #    part of the SDK's own wire encoding; set it to false to block the script if that is preferred.
+#  - @nestjs/core: not installed by a normal build. The nest-next canary adds the Nest 12
+#    prereleases, and those carry a build script; without an entry here that job dies at install
+#    and the early warning it exists to give never runs.
 allowBuilds:
   lefthook: true
   protobufjs: true
+  "@nestjs/core": true
 
 overrides:
   brace-expansion: ^5.0.6
