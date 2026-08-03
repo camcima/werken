@@ -16,6 +16,8 @@ export interface MessageSpanInput {
   readonly envelope: TelemetryEnvelope;
   readonly subscription: string;
   readonly messageId: string;
+  /** The registered pattern that matched, or a bounded sentinel when none did. */
+  readonly route: string;
 }
 
 export interface TelemetryOptions {
@@ -31,13 +33,19 @@ export type SchemaCacheResult = "hit" | "miss";
 export interface Telemetry {
   withMessageSpan<T>(input: MessageSpanInput, work: () => Promise<T>): Promise<T>;
   withChildSpan<T>(name: string, work: () => Promise<T>): Promise<T>;
-  recordReceived(type: string, subscription: string): void;
-  recordOutcome(type: string, outcome: Outcome | "skipped_duplicate"): void;
-  recordHandlerDuration(type: string, milliseconds: number): void;
-  recordDecodeFailure(type: string, reason: string): void;
+  /**
+   * Every metric below is labelled by `route` — the registered pattern, or a bounded sentinel for
+   * a message that matched none. Never the raw `ce-type`: that is producer-controlled, and a
+   * wildcard route matches an open-ended set of them, so labelling on it lets one misbehaving
+   * producer mint unbounded metric series.
+   */
+  recordReceived(route: string, subscription: string): void;
+  recordOutcome(route: string, outcome: Outcome | "skipped_duplicate"): void;
+  recordHandlerDuration(route: string, milliseconds: number): void;
+  recordDecodeFailure(route: string, reason: string): void;
   recordSchemaCache(result: SchemaCacheResult): void;
   addInFlight(subscription: string, delta: number): void;
-  recordLateness(type: string, occurredAt: Date, now?: Date): void;
+  recordLateness(route: string, occurredAt: Date, now?: Date): void;
 }
 
 const NOOP: Telemetry = {
@@ -86,8 +94,11 @@ export function createTelemetry(options: TelemetryOptions): Telemetry {
       if (input.envelope.tracestate !== undefined) carrier["tracestate"] = input.envelope.tracestate;
       const parent = api.propagation.extract(api.context.active(), carrier);
 
+      // Named for the subscription, not the event type: a span name is a low-cardinality
+      // aggregation key, and ce-type is producer-controlled. The type is still on the span, as an
+      // attribute, where high cardinality is expected and cheap.
       return await tracer.startActiveSpan(
-        `${input.envelope.type} process`,
+        `${input.subscription} process`,
         {
           kind: SpanKind.CONSUMER,
           attributes: {
@@ -98,6 +109,7 @@ export function createTelemetry(options: TelemetryOptions): Telemetry {
             "cloudevents.event_id": input.envelope.id,
             "cloudevents.event_type": input.envelope.type,
             "cloudevents.event_source": input.envelope.source,
+            "werken.route": input.route,
             ...(input.envelope.subject === undefined ? {} : { "cloudevents.event_subject": input.envelope.subject }),
           },
         },
@@ -132,14 +144,14 @@ export function createTelemetry(options: TelemetryOptions): Telemetry {
       });
     },
 
-    recordReceived: (type, subscription) => received.add(1, { type, subscription }),
-    recordOutcome: (type, outcome) => outcomes.add(1, { type, outcome }),
-    recordHandlerDuration: (type, milliseconds) => handlerDuration.record(milliseconds, { type }),
-    recordDecodeFailure: (type, reason) => decodeFailures.add(1, { type, reason }),
+    recordReceived: (route, subscription) => received.add(1, { route, subscription }),
+    recordOutcome: (route, outcome) => outcomes.add(1, { route, outcome }),
+    recordHandlerDuration: (route, milliseconds) => handlerDuration.record(milliseconds, { route }),
+    recordDecodeFailure: (route, reason) => decodeFailures.add(1, { route, reason }),
     recordSchemaCache: (result) => schemaCache.add(1, { result }),
     addInFlight: (subscription, delta) => inFlight.add(delta, { subscription }),
-    recordLateness: (type, occurredAt, now = new Date()) =>
-      lateness.record((now.getTime() - occurredAt.getTime()) / 1000, { type }),
+    recordLateness: (route, occurredAt, now = new Date()) =>
+      lateness.record((now.getTime() - occurredAt.getTime()) / 1000, { route }),
   };
 }
 

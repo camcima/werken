@@ -101,7 +101,7 @@ export class WerkenPubSubTransport
   ): MessagePipeline {
     return new MessagePipeline({
       subscription,
-      resolveHandler: (type) => this.router?.resolve(type) ?? null,
+      resolveRoute: (type) => this.router?.resolve(type) ?? null,
       deadLetterPublisher,
       codec,
       idempotencyStore: this.idempotencyStore,

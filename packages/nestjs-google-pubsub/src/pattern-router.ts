@@ -1,4 +1,4 @@
-import type { EventHandler } from "./pipeline.js";
+import type { EventHandler, ResolvedRoute } from "./pipeline.js";
 
 export class InvalidPatternError extends Error {
   constructor(message: string) {
@@ -45,7 +45,7 @@ export class PatternRouter {
   private readonly exact = new Map<string, EventHandler>();
   private readonly wildcards: WildcardRoute[] = [];
   /** Resolved lookups, so patterns are scanned once per type rather than once per message. */
-  private readonly resolved = new Map<string, EventHandler | null>();
+  private readonly resolved = new Map<string, ResolvedRoute | null>();
   private readonly maxCachedTypes: number;
   private scans = 0;
 
@@ -77,10 +77,10 @@ export class PatternRouter {
     return { scans: this.scans, cached: this.resolved.size };
   }
 
-  resolve(type: string): EventHandler | null {
+  resolve(type: string): ResolvedRoute | null {
     // With no wildcard registered there is nothing to scan: hits and misses alike are already a
     // single Map lookup, so a cache would only add a second one and a Map that grows forever.
-    if (this.wildcards.length === 0) return this.exact.get(type) ?? null;
+    if (this.wildcards.length === 0) return exactRoute(this.exact.get(type), type);
 
     const cached = this.resolved.get(type);
     if (cached !== undefined) {
@@ -91,30 +91,37 @@ export class PatternRouter {
     }
 
     this.scans++;
-    const handler = this.scan(type);
+    const route = this.scan(type);
     // Misses are cached too: a subscription legitimately carries types this consumer ignores, and
     // rescanning for each of them is pure waste.
-    this.resolved.set(type, handler);
+    this.resolved.set(type, route);
     while (this.resolved.size > this.maxCachedTypes) {
       const oldest = this.resolved.keys().next();
       if (oldest.done === true) break;
       this.resolved.delete(oldest.value);
     }
-    return handler;
+    return route;
   }
 
-  private scan(type: string): EventHandler | null {
-    const exact = this.exact.get(type);
-    if (exact !== undefined) return exact;
+  private scan(type: string): ResolvedRoute | null {
+    const exact = exactRoute(this.exact.get(type), type);
+    if (exact !== null) return exact;
 
     const segments = type.split(SEPARATOR);
     for (const route of this.wildcards) {
       // "one or more trailing segments": the prefix alone is not a match.
       if (segments.length <= route.prefix.length) continue;
-      if (route.prefix.every((segment, index) => segments[index] === segment)) return route.handler;
+      if (route.prefix.every((segment, index) => segments[index] === segment)) {
+        return { handler: route.handler, pattern: route.pattern };
+      }
     }
     return null;
   }
+}
+
+/** An exact hit's registered pattern is the type itself. */
+function exactRoute(handler: EventHandler | undefined, type: string): ResolvedRoute | null {
+  return handler === undefined ? null : { handler, pattern: type };
 }
 
 function assertSupported(pattern: string): void {

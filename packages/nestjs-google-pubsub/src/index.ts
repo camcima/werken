@@ -1,5 +1,12 @@
 export type { CloudEventContext, IncomingMessage } from "./types.js";
-export type { EventHandler, MessagePipelineOptions, Outcome, RejectionPolicy, ValidationOptions } from "./pipeline.js";
+export type {
+  EventHandler,
+  MessagePipelineOptions,
+  Outcome,
+  RejectionPolicy,
+  ResolvedRoute,
+  ValidationOptions,
+} from "./pipeline.js";
 export type { DeadLetterPublisher, DeadLetterRequest, DeadLetterStage } from "./dead-letter.js";
 export type {
   FlowControlOptions,
@@ -23,7 +30,7 @@ export type { WerkenTransportEvents, WerkenTransportStatus } from "./transport.j
 export type { SchemaCacheStats, SchemaRevisionCacheOptions } from "./schema/cache.js";
 export type { AvroCodecOptions, SchemaMessageMeta } from "./schema/avro-codec.js";
 export { buildContext } from "./context.js";
-export { DEFAULT_IDEMPOTENCY_TTL_MS, MessagePipeline } from "./pipeline.js";
+export { DEFAULT_IDEMPOTENCY_TTL_MS, INVALID_ROUTE, MessagePipeline, UNMATCHED_ROUTE } from "./pipeline.js";
 export {
   DEAD_LETTER_ATTRIBUTES,
   PubSubDeadLetterPublisher,

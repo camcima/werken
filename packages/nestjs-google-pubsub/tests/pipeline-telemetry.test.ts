@@ -64,7 +64,7 @@ describe("outcome metric wiring", () => {
     const { telemetry, outcomes } = recordingTelemetry();
     const pipeline = new MessagePipeline({
       subscription: SUBSCRIPTION,
-      resolveHandler: () => async () => {},
+      resolveRoute: () => ({ handler: async () => {}, pattern: TYPE }),
       telemetry,
     });
 
@@ -77,9 +77,12 @@ describe("outcome metric wiring", () => {
     const { telemetry, outcomes } = recordingTelemetry();
     const pipeline = new MessagePipeline({
       subscription: SUBSCRIPTION,
-      resolveHandler: () => () => {
-        throw new Error("transient");
-      },
+      resolveRoute: () => ({
+        pattern: TYPE,
+        handler: () => {
+          throw new Error("transient");
+        },
+      }),
       telemetry,
     });
 
@@ -92,9 +95,12 @@ describe("outcome metric wiring", () => {
     const { telemetry, outcomes } = recordingTelemetry();
     const pipeline = new MessagePipeline({
       subscription: SUBSCRIPTION,
-      resolveHandler: () => () => {
-        throw new TerminalEventError("will never resolve");
-      },
+      resolveRoute: () => ({
+        pattern: TYPE,
+        handler: () => {
+          throw new TerminalEventError("will never resolve");
+        },
+      }),
       deadLetterPublisher: { publish: async () => {} },
       telemetry,
     });
@@ -104,24 +110,27 @@ describe("outcome metric wiring", () => {
     expect(outcomes).toEqual([{ type: TYPE, outcome: "dead-letter" }]);
   });
 
-  test("records the policy outcome for a message no handler matches", async () => {
+  // Labelled by a bounded sentinel, never the raw ce-type: an unmatched type is by definition one
+  // this consumer did not register, so labelling on it lets a stray producer mint a new series per
+  // event type it invents.
+  test("records a message no handler matches under the unmatched sentinel", async () => {
     const { telemetry, outcomes } = recordingTelemetry();
     const pipeline = new MessagePipeline({
       subscription: SUBSCRIPTION,
-      resolveHandler: () => null,
+      resolveRoute: () => null,
       telemetry,
     });
 
     await pipeline.handle(message());
 
-    expect(outcomes).toEqual([{ type: TYPE, outcome: "ack" }]);
+    expect(outcomes).toEqual([{ type: "<unmatched>", outcome: "ack" }]);
   });
 
   test("records skipped_duplicate, not a second ack, for a duplicate delivery", async () => {
     const { telemetry, outcomes } = recordingTelemetry();
     const pipeline = new MessagePipeline({
       subscription: SUBSCRIPTION,
-      resolveHandler: () => async () => {},
+      resolveRoute: () => ({ handler: async () => {}, pattern: TYPE }),
       idempotencyStore: new InMemoryIdempotencyStore(),
       consumer: "orders",
       telemetry,
@@ -137,18 +146,20 @@ describe("outcome metric wiring", () => {
     ]);
   });
 
-  test("records nothing for an invalid envelope, whose type cannot be trusted", async () => {
+  test("records an invalid envelope under the invalid sentinel", async () => {
     const { telemetry, outcomes } = recordingTelemetry();
     const pipeline = new MessagePipeline({
       subscription: SUBSCRIPTION,
-      resolveHandler: () => async () => {},
+      resolveRoute: () => ({ handler: async () => {}, pattern: TYPE }),
       deadLetterPublisher: { publish: async () => {} },
       telemetry,
     });
 
     await pipeline.handle(message({ attributes: { "ce-specversion": "1.0" } }));
 
-    expect(outcomes).toEqual([]);
+    // Previously skipped entirely, which made a producer emitting garbage indistinguishable from
+    // one emitting nothing — the case most worth spotting.
+    expect(outcomes).toEqual([{ type: "<invalid>", outcome: "dead-letter" }]);
   });
 });
 
@@ -159,9 +170,12 @@ describe("handler duration metric", () => {
     const { telemetry, durations } = recordingTelemetry();
     const pipeline = new MessagePipeline({
       subscription: SUBSCRIPTION,
-      resolveHandler: () => () => {
-        throw new TerminalEventError("will never resolve");
-      },
+      resolveRoute: () => ({
+        pattern: TYPE,
+        handler: () => {
+          throw new TerminalEventError("will never resolve");
+        },
+      }),
       deadLetterPublisher: { publish: async () => {} },
       telemetry,
     });
@@ -173,20 +187,46 @@ describe("handler duration metric", () => {
 });
 
 describe("message span wiring", () => {
-  // The span opens once a handler is known — unhandled types are not this consumer's work.
-  test("opens the message span only when a handler resolves", async () => {
+  // Every message with a valid envelope gets a span, including one no handler matches: that case is
+  // contract drift, and seeing it join the producer's trace is how it gets noticed at all.
+  test("opens a message span for an unmatched type as well as a handled one", async () => {
     const { telemetry, messageSpans } = recordingTelemetry();
     const handlers: Record<string, () => void> = { [TYPE]: () => {} };
     const pipeline = new MessagePipeline({
       subscription: SUBSCRIPTION,
-      resolveHandler: (pattern) => handlers[pattern] ?? null,
+      resolveRoute: (type) => (handlers[type] === undefined ? null : { handler: handlers[type], pattern: type }),
       telemetry,
     });
 
     await pipeline.handle(message());
-    await pipeline.handle(message({ attributes: { ...message().attributes, "ce-type": "com.example.unrelated.v1" } }));
+    await pipeline.handle(
+      message({
+        id: "pubsub-message-2",
+        attributes: {
+          ...message().attributes,
+          "ce-id": "01931b7c-3f2a-7000-8000-000000000002",
+          "ce-type": "com.example.unrelated.v1",
+        },
+      }),
+    );
 
-    expect(messageSpans).toEqual(["01931b7c-3f2a-7000-8000-000000000001"]);
+    expect(messageSpans).toEqual(["01931b7c-3f2a-7000-8000-000000000001", "01931b7c-3f2a-7000-8000-000000000002"]);
+  });
+
+  // An invalid envelope has no trustworthy traceparent to parent a span on, so it stays
+  // metrics-only. The rule is: a span for every valid envelope, a metric for every message.
+  test("opens no span for an invalid envelope", async () => {
+    const { telemetry, messageSpans } = recordingTelemetry();
+    const pipeline = new MessagePipeline({
+      subscription: SUBSCRIPTION,
+      resolveRoute: () => ({ handler: async () => {}, pattern: TYPE }),
+      deadLetterPublisher: { publish: async () => {} },
+      telemetry,
+    });
+
+    await pipeline.handle(message({ attributes: { "ce-specversion": "1.0" } }));
+
+    expect(messageSpans).toEqual([]);
   });
 });
 
@@ -214,7 +254,7 @@ describe("trace continuity through the pipeline", () => {
   test("wraps decode and handler in one CONSUMER span continuing ce-traceparent", async () => {
     const pipeline = new MessagePipeline({
       subscription: SUBSCRIPTION,
-      resolveHandler: () => async () => {},
+      resolveRoute: () => ({ handler: async () => {}, pattern: TYPE }),
       telemetry: createTelemetry({ serviceName: "werken" }),
     });
 
@@ -222,7 +262,7 @@ describe("trace continuity through the pipeline", () => {
     await pipeline.handle(message({ attributes: { ...message().attributes, "ce-traceparent": traceparent } }));
 
     const spans = spanExporter.getFinishedSpans();
-    const processSpan = spans.find((s) => s.name === `${TYPE} process`);
+    const processSpan = spans.find((s) => s.name === `${SUBSCRIPTION} process`);
     expect(processSpan).toBeDefined();
     expect(processSpan?.kind).toBe(4); // SpanKind.CONSUMER
     // Same trace id as the producer means the two halves join up in the trace view.

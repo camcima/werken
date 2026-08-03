@@ -19,6 +19,24 @@ export type RejectionPolicy = "dead-letter" | "nack" | "ack";
 
 export type EventHandler = (data: unknown, ctx: CloudEventContext) => unknown;
 
+/** A handler plus the registered pattern that selected it. */
+export interface ResolvedRoute {
+  readonly handler: EventHandler;
+  /**
+   * The pattern this consumer registered, not the `ce-type` that matched it. Bounded by
+   * registration, which is why telemetry labels on it: `ce-type` is producer-controlled, and a
+   * wildcard route matches an open-ended set of them.
+   */
+  readonly pattern: string;
+}
+
+/**
+ * Telemetry labels for messages that never reached a route. Bounded stand-ins, so a malformed or
+ * unrecognised producer cannot mint an unbounded number of metric series.
+ */
+export const UNMATCHED_ROUTE = "<unmatched>";
+export const INVALID_ROUTE = "<invalid>";
+
 export interface ValidationOptions {
   /** Default 'dead-letter'. */
   onInvalidEnvelope?: RejectionPolicy;
@@ -31,10 +49,10 @@ export interface ValidationOptions {
 export interface MessagePipelineOptions {
   readonly subscription: string;
   /**
-   * Resolves the handler for a `ce-type`, or null when this consumer has none. The transport
-   * supplies a `PatternRouter`, which prefers an exact pattern over a wildcard one.
+   * Resolves the route for a `ce-type`, or null when this consumer has none. The transport supplies
+   * a `PatternRouter`, which prefers an exact pattern over a wildcard one.
    */
-  readonly resolveHandler: (pattern: string) => EventHandler | null;
+  readonly resolveRoute: (type: string) => ResolvedRoute | null;
   readonly deadLetterPublisher?: DeadLetterPublisher;
   /** Avro schema resolution and decode. Without it, bodies are parsed as plain JSON. */
   readonly codec?: Pick<AvroCodec, "decode">;
@@ -86,12 +104,20 @@ export class MessagePipeline {
       // and ce-source, so a message whose envelope has not been validated has no identity worth
       // keying on: two malformed messages both carrying an empty ce-id would share one outcome, and
       // the transport would ack both while only the first was ever copied to the dead-letter topic.
-      return this.reject(message, {
+      const outcome = await this.reject(message, {
         policy: this.options.validation?.onInvalidEnvelope ?? "dead-letter",
         stage: "envelope",
         reason: asMessage(error),
         now,
       });
+      // Counted under a sentinel rather than skipped. These are the messages that matter most for
+      // spotting contract drift, and leaving them out of the metrics made a producer emitting
+      // garbage look identical to one emitting nothing. No span: there is no envelope to trust,
+      // so nothing to parent it on.
+      const telemetry = this.options.telemetry;
+      telemetry?.recordReceived(INVALID_ROUTE, this.options.subscription);
+      telemetry?.recordOutcome(INVALID_ROUTE, outcome);
+      return outcome;
     }
 
     if (this.options.idempotencyStore === undefined) return this.run(envelope, message, now);
@@ -112,40 +138,44 @@ export class MessagePipeline {
   private async run(envelope: CloudEventEnvelope, message: IncomingMessage, now: () => Date): Promise<Outcome> {
     const telemetry = this.options.telemetry;
 
-    telemetry?.recordReceived(envelope.type, this.options.subscription);
+    const route = this.options.resolveRoute(envelope.type);
+    // Labelled by the registered pattern, never the raw ce-type: the type is producer-controlled,
+    // so using it would let one misbehaving producer mint unbounded metric series.
+    const label = route?.pattern ?? UNMATCHED_ROUTE;
+
+    telemetry?.recordReceived(label, this.options.subscription);
     // Lateness is an operational signal in its own right, not just a debugging aid: for events that
     // routinely arrive long after they happened, its distribution is the thing worth alerting on.
-    if (envelope.time !== undefined) telemetry?.recordLateness(envelope.type, envelope.time, now());
+    if (envelope.time !== undefined) telemetry?.recordLateness(label, envelope.time, now());
 
-    const handler = this.options.resolveHandler(envelope.type);
-    if (handler === null) {
-      const outcome = await this.reject(message, {
-        policy: this.options.onUnhandledPattern ?? "ack",
-        stage: "unhandled",
-        reason: `no handler registered for ${envelope.type}`,
-        now,
-      });
-      telemetry?.recordOutcome(envelope.type, outcome);
-      return outcome;
-    }
+    // The span covers every message with a valid envelope, including one no handler matches —
+    // that case is contract drift, and seeing it join the producer's trace is how it gets noticed.
+    // It spans the idempotency check, decode, the handler and the idempotency record, parented on
+    // ce-traceparent so the werken.decode/werken.handler children join the producer's trace.
+    const work = (): Promise<Outcome | "skipped_duplicate"> =>
+      route === null
+        ? this.reject(message, {
+            policy: this.options.onUnhandledPattern ?? "ack",
+            stage: "unhandled",
+            reason: `no handler registered for ${envelope.type}`,
+            now,
+          })
+        : this.dispatch(route.handler, label, envelope, message, now);
 
-    // The message span opens once a handler is known, covering the idempotency check,
-    // decode, the handler and the idempotency record — parented on the producer's ce-traceparent
-    // so the werken.decode/werken.handler child spans join the producer's trace.
-    const work = () => this.dispatch(handler, envelope, message, now);
     const result =
       telemetry === undefined
         ? await work()
         : await telemetry.withMessageSpan(
-            { envelope, subscription: this.options.subscription, messageId: message.id },
+            { envelope, subscription: this.options.subscription, messageId: message.id, route: label },
             work,
           );
-    telemetry?.recordOutcome(envelope.type, result);
+    telemetry?.recordOutcome(label, result);
     return result === "skipped_duplicate" ? "ack" : result;
   }
 
   private async dispatch(
     handler: EventHandler,
+    label: string,
     envelope: CloudEventEnvelope,
     message: IncomingMessage,
     now: () => Date,
@@ -182,7 +212,7 @@ export class MessagePipeline {
         ? this.decode(message)
         : telemetry.withChildSpan("werken.decode", () => this.decode(message)));
     } catch (error) {
-      telemetry?.recordDecodeFailure(envelope.type, decodeReason(error));
+      telemetry?.recordDecodeFailure(label, decodeReason(error));
       return this.reject(message, {
         policy: this.options.validation?.onDecodeFailure ?? "dead-letter",
         stage: "decode",
@@ -196,14 +226,14 @@ export class MessagePipeline {
       await (telemetry === undefined
         ? settle(await handler(data, ctx))
         : telemetry.withChildSpan("werken.handler", async () => settle(await handler(data, ctx))));
-      telemetry?.recordHandlerDuration(envelope.type, Date.now() - startedAt);
+      telemetry?.recordHandlerDuration(label, Date.now() - startedAt);
       await this.record(key, ctx);
       return "ack";
     } catch (error) {
       // Recorded here rather than per-branch so a terminal failure counts too — those are often the
       // slowest thing a handler does, and the tail is the reason to keep a histogram at all. Taken
       // before the dead-letter publish below, so it measures the handler and not the publish.
-      telemetry?.recordHandlerDuration(envelope.type, Date.now() - startedAt);
+      telemetry?.recordHandlerDuration(label, Date.now() - startedAt);
 
       const terminal = asTerminalFailure(error);
       if (terminal !== null) {

@@ -55,7 +55,7 @@ function pipelineWith(
 ) {
   return new MessagePipeline({
     subscription: "projects/p/subscriptions/s",
-    resolveHandler: (pattern) => handlers[pattern] ?? null,
+    resolveRoute: (type) => (handlers[type] === undefined ? null : { handler: handlers[type], pattern: type }),
     ...extra,
   });
 }

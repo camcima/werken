@@ -7,7 +7,10 @@ function router(patterns: Record<string, unknown>) {
   return new PatternRouter(Object.entries(patterns) as Array<[string, () => void]>);
 }
 
-const nameOf = (h: unknown) => (h as { name?: string } | null)?.name;
+const nameOf = (route: unknown) => (route as { handler: { name?: string } } | null)?.handler?.name;
+
+/** The matched pattern is what telemetry labels on, so resolve() has to report it. */
+const patternOf = (route: unknown) => (route as { pattern?: string } | null)?.pattern;
 
 describe("exact patterns", () => {
   test("routes an exact match", () => {
@@ -142,6 +145,26 @@ describe("pattern validation", () => {
     expect(() =>
       router({ "com.example.thing.v1": handler("a"), "com.example.*": handler("b"), "*": handler("c") }),
     ).not.toThrow();
+  });
+});
+
+describe("the matched pattern", () => {
+  test("reports the registered pattern, not the type that matched it", () => {
+    const r = router({ "com.example.*": handler("wild") });
+
+    expect(patternOf(r.resolve("com.example.thing.happened.v1"))).toBe("com.example.*");
+  });
+
+  test("reports the type itself for an exact registration", () => {
+    const r = router({ "com.example.thing.v1": handler("exact") });
+
+    expect(patternOf(r.resolve("com.example.thing.v1"))).toBe("com.example.thing.v1");
+  });
+
+  test("reports the catch-all as its own pattern", () => {
+    const r = router({ "*": handler("all") });
+
+    expect(patternOf(r.resolve("literally.anything"))).toBe("*");
   });
 });
 

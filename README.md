@@ -787,27 +787,43 @@ try {
 
 ## Observability
 
-One `CONSUMER` span named `{ce-type} process` per message **that reaches a handler**, continuing the
-producer's trace from `ce-traceparent`, with child spans for decode and handler.
+One `CONSUMER` span named `{subscription} process`, continuing the producer's trace from
+`ce-traceparent`, with child spans for decode and handler. The event type is on the span as the
+`cloudevents.event_type` attribute rather than in its name, because a span name is a
+low-cardinality aggregation key and `ce-type` is producer-controlled.
 
-Two kinds of message do not get one, which is worth knowing before you go hunting for them in a
-trace:
+The coverage rule is simple: **a span for every message with a valid envelope, a metric for every
+message.**
 
-- **An invalid envelope** is rejected before any telemetry runs, so it produces no span and no
-  metric at all. It shows up in the logs and, by default, in the dead-letter topic.
-- **A message no handler matches** is counted — `werken.messages.received` and
-  `werken.messages.outcome` both see it — but gets no span, because the span opens only once a
-  handler is known.
+- **A message no handler matches** gets both. That is contract drift, and a span joining the
+  producer's trace is how it gets noticed rather than silently acked.
+- **An invalid envelope** gets metrics but no span: there is no envelope to trust, so nothing to
+  parent a span on. It also shows up in the logs and, by default, in the dead-letter topic.
 
-| Metric                     | Type            | Labels                 |
-| -------------------------- | --------------- | ---------------------- |
-| `werken.messages.received` | counter         | `type`, `subscription` |
-| `werken.messages.outcome`  | counter         | `type`, `outcome`      |
-| `werken.handler.duration`  | histogram       | `type`                 |
-| `werken.decode.failures`   | counter         | `type`, `reason`       |
-| `werken.schema.cache`      | counter         | `result`               |
-| `werken.messages.inflight` | up-down counter | `subscription`         |
-| `werken.event.lateness`    | histogram       | `type`                 |
+| Metric                     | Type            | Labels                  |
+| -------------------------- | --------------- | ----------------------- |
+| `werken.messages.received` | counter         | `route`, `subscription` |
+| `werken.messages.outcome`  | counter         | `route`, `outcome`      |
+| `werken.handler.duration`  | histogram       | `route`                 |
+| `werken.decode.failures`   | counter         | `route`, `reason`       |
+| `werken.schema.cache`      | counter         | `result`                |
+| `werken.messages.inflight` | up-down counter | `subscription`          |
+| `werken.event.lateness`    | histogram       | `route`                 |
+
+### Why `route` and not `ce-type`
+
+`route` is the **pattern you registered** — `com.example.order.*`, or the exact type for an exact
+registration. `ce-type` is chosen by the producer, and a wildcard route matches an open-ended set of
+them, so labelling on it lets one misbehaving or dynamic producer mint unbounded metric series and
+drive up your observability bill. Two bounded sentinels cover the rest:
+
+| `route`       | Meaning                                           |
+| ------------- | ------------------------------------------------- |
+| `<unmatched>` | Valid envelope, but no registered pattern matched |
+| `<invalid>`   | The envelope failed validation                    |
+
+If you need per-type breakdown, take it from the span attribute, where high cardinality is expected
+and priced accordingly.
 
 `werken.event.lateness` (`now - ce-time`, in seconds) is deliberately included: for events that
 routinely arrive long after they happened, the distribution of lateness is an operational signal in
