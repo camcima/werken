@@ -195,6 +195,46 @@ describe("startup failures", () => {
     expect(String(error)).toMatch(/does not exist/i);
   });
 
+  // The client and subscription are created before the existence check, so a failure past that
+  // point used to leave the SDK's gRPC channels, retry timers and credentials-backed client alive.
+  // Repeated bootstrap attempts — a crash loop, a test suite — then stack them up.
+  test("closes what it created when the scoped subscription is missing", async () => {
+    const { client, subscription } = fakeClient(false);
+    const transport = new WerkenPubSubTransport({
+      projectId: "p",
+      subscription: "orders-consumer",
+      resourcePrefix: "alice",
+      createClient: () => client as never,
+    });
+
+    expect(String(await listen(transport))).toMatch(/does not exist/i);
+
+    expect(subscription.close).toHaveBeenCalledTimes(1);
+    expect(client.close).toHaveBeenCalledTimes(1);
+  });
+
+  test("closes the client when the existence check itself throws", async () => {
+    const { client, subscription } = fakeClient();
+    client.subscription = vi.fn(() =>
+      Object.assign(subscription, {
+        exists: vi.fn(async () => {
+          throw new Error("permission denied");
+        }),
+      }),
+    ) as never;
+    const transport = new WerkenPubSubTransport({
+      projectId: "p",
+      subscription: "orders-consumer",
+      resourcePrefix: "alice",
+      createClient: () => client as never,
+    });
+
+    expect(String(await listen(transport))).toMatch(/permission denied/);
+
+    expect(subscription.close).toHaveBeenCalledTimes(1);
+    expect(client.close).toHaveBeenCalledTimes(1);
+  });
+
   test("fails on an invalid prefix rather than at first publish", async () => {
     const { client } = fakeClient();
     const transport = new WerkenPubSubTransport({
