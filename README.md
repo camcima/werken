@@ -57,7 +57,8 @@ de-duplication, tracing, draining — happens around the handler.
 - **Outcome by return value** — `return` to ack, `throw` to nack and retry, `TerminalEventError` to
   dead-letter immediately without burning the retry budget.
 - **Explicit dead-lettering** — publishes to a topic you configure, preserving the original body and
-  attributes and adding provenance (reason, stage, source subscription, timestamp). Not the
+  attributes and adding provenance (reason, stage, source subscription, timestamp, structured
+  detail and the original ordering key). Not the
   subscription's retry policy, which only triggers after every retry is exhausted.
 - **Avro schema resolution** — fetches the _writer_ schema by revision from the Pub/Sub Schema
   Service and resolves it against your compiled _reader_ type. Cached by revision id, single-flight,
@@ -216,6 +217,32 @@ Two orderings in there are deliberate and worth knowing:
   silently swallowing a message whose handler then failed; recording after the ack risks a crash in
   between. Neither is eliminable — this is at-least-once — which is exactly why handlers must remain
   idempotent regardless.
+
+### What a dead-lettered message carries
+
+The original body and attributes, untouched, plus provenance:
+
+| Attribute                       | Value                                                       |
+| ------------------------------- | ----------------------------------------------------------- |
+| `werken-dl-reason`              | Why it was terminal                                         |
+| `werken-dl-stage`               | `envelope`, `decode`, `handler` or `unhandled`              |
+| `werken-dl-source-subscription` | The subscription it was read from, prefix already resolved  |
+| `werken-dl-timestamp`           | When it was dead-lettered, ISO 8601                         |
+| `werken-dl-detail`              | JSON of the `detail` a `TerminalEventError` carried, if any |
+| `werken-dl-ordering-key`        | The original ordering key, if it had one                    |
+
+`throw new TerminalEventError("unknown shipment", { shipmentId })` puts `{"shipmentId":"..."}` in
+`werken-dl-detail`, so the context you attached is there when you come to triage it.
+
+Two limits worth knowing. Pub/Sub caps an attribute at 1024 bytes, so detail larger than that is
+replaced by `{"truncated":true,"bytes":N}` — truncating JSON mid-string would leave something
+nothing can parse. Detail that cannot be serialised at all becomes `{"unserialisable":true,...}`.
+Neither ever fails the publish: losing the message is worse than losing its diagnostics.
+
+The ordering key is carried as **provenance, not as a live ordering key**. Republishing under a real
+one would require the dead-letter topic to be built with `messageOrdering` and would serialise
+dead-letter publishes per key — a slow path made slower exactly when things are already wrong.
+Redrive tooling reads the attribute and restores order itself.
 
 ## Documentation
 

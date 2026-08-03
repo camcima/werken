@@ -176,3 +176,74 @@ describe("transport integration with dead-lettering", () => {
     expect(message.ack).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * TerminalEventError accepts structured detail and the pipeline carries it into DeadLetterRequest,
+ * but the production publisher dropped it — so the diagnostic context a handler deliberately
+ * attached survived only for a custom publisher, never for the real one.
+ */
+describe("structured detail and ordering provenance", () => {
+  const publish = async (request: Partial<Parameters<PubSubDeadLetterPublisher["publish"]>[0]> = {}) => {
+    const { published, topic } = fakeTopic();
+    const publisher = new PubSubDeadLetterPublisher({ topic: () => topic } as never, "dead-letters");
+    await publisher.publish({
+      message: incoming(),
+      reason: "unknown shipment",
+      stage: "handler",
+      subscription: "orders-consumer",
+      timestamp: new Date("2026-08-03T10:00:00.000Z"),
+      ...request,
+    } as never);
+    return published[0];
+  };
+
+  test("serialises structured detail as a JSON provenance attribute", async () => {
+    const sent = await publish({ detail: { shipmentId: "known-1", attempts: 3 } });
+
+    expect(JSON.parse(sent.attributes[DEAD_LETTER_ATTRIBUTES.detail])).toEqual({
+      shipmentId: "known-1",
+      attempts: 3,
+    });
+  });
+
+  test("adds no detail attribute when the handler attached none", async () => {
+    const sent = await publish();
+
+    expect(sent.attributes).not.toHaveProperty(DEAD_LETTER_ATTRIBUTES.detail);
+  });
+
+  // Pub/Sub caps an attribute value at 1024 bytes. Truncating JSON mid-string yields something
+  // nothing can parse, so oversized detail is replaced by a marker naming its real size — the
+  // operator learns detail existed and why it is not here.
+  test("replaces oversized detail with a marker rather than unparseable JSON", async () => {
+    const sent = await publish({ detail: { blob: "x".repeat(4000) } });
+
+    const marker = JSON.parse(sent.attributes[DEAD_LETTER_ATTRIBUTES.detail]) as Record<string, unknown>;
+    expect(marker.truncated).toBe(true);
+    expect(marker.bytes).toBeGreaterThan(1024);
+  });
+
+  test("never fails the publish over unserialisable detail", async () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+
+    const sent = await publish({ detail: circular });
+
+    expect(JSON.parse(sent.attributes[DEAD_LETTER_ATTRIBUTES.detail])).toMatchObject({ unserialisable: true });
+  });
+
+  // Redrive tooling cannot restore per-entity ordering without knowing the original key. Carried as
+  // provenance, not as a live ordering key: republishing with one would need the dead-letter topic
+  // built for ordering, and would serialise dead-letter publishes per key.
+  test("preserves the original ordering key as provenance", async () => {
+    const sent = await publish({ message: incoming({ orderingKey: "shipment-42" }) });
+
+    expect(sent.attributes[DEAD_LETTER_ATTRIBUTES.orderingKey]).toBe("shipment-42");
+  });
+
+  test("omits the ordering key attribute when the original had none", async () => {
+    const sent = await publish();
+
+    expect(sent.attributes).not.toHaveProperty(DEAD_LETTER_ATTRIBUTES.orderingKey);
+  });
+});
