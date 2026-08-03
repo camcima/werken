@@ -124,6 +124,13 @@ In increasing order of cost:
 - **Use [`@werken/cloudevents`](packages/cloudevents) directly** and drive the Pub/Sub SDK yourself.
   It is standalone, with zero dependencies and no GCP or Nest imports.
 
+If your events are not CloudEvents and are not going to become CloudEvents, then Werken is the wrong
+tool and there is a better one:
+[`nestjs-google-pubsub-microservice`](https://github.com/p-fedyukovich/nestjs-google-pubsub-microservice)
+is a community Nest transport for Pub/Sub, MIT-licensed, that takes no position on the wire format.
+What you give up is what the envelope pays for — routing on `ce-type`, idempotency keyed on source
+and id, and a trace that continues from the producer.
+
 ## Installation
 
 ```bash
