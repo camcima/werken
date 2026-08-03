@@ -191,4 +191,39 @@ describe("concurrent duplicates", () => {
     expect(maxConcurrent).toBe(1);
     expect(outcomes).toEqual(["ack", "ack"]);
   });
+
+  // Coalescing keys on ce-id and ce-source, so it must not run before those have been validated.
+  // Two malformed messages share the empty identity, and collapsing them would ack both while only
+  // one ever reached the dead-letter topic — the invalid-envelope policy promises each is kept.
+  test("dead-letters both of two concurrent malformed messages that share an empty identity", async () => {
+    const published: Array<{ id: string; body: string }> = [];
+    const pipeline = pipelineWith(
+      {},
+      {
+        idempotencyStore: new InMemoryIdempotencyStore(),
+        deadLetterPublisher: {
+          publish: async (request) => {
+            published.push({ id: request.message.id, body: request.message.data.toString("utf8") });
+          },
+        },
+      },
+    );
+    const malformed = (id: string, body: string) =>
+      message({
+        id,
+        data: Buffer.from(body),
+        attributes: { "ce-specversion": "1.0", "ce-id": "", "ce-source": "", "ce-type": TYPE },
+      });
+
+    const outcomes = await Promise.all([
+      pipeline.handle(malformed("pubsub-message-1", '{"first":true}')),
+      pipeline.handle(malformed("pubsub-message-2", '{"second":true}')),
+    ]);
+
+    expect(outcomes).toEqual(["dead-letter", "dead-letter"]);
+    expect(published).toEqual([
+      { id: "pubsub-message-1", body: '{"first":true}' },
+      { id: "pubsub-message-2", body: '{"second":true}' },
+    ]);
+  });
 });

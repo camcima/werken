@@ -73,17 +73,34 @@ export class MessagePipeline {
   constructor(private readonly options: MessagePipelineOptions) {}
 
   async handle(message: IncomingMessage): Promise<Outcome> {
-    const id = message.attributes["ce-id"];
-    const source = message.attributes["ce-source"];
-    if (this.options.idempotencyStore === undefined || id === undefined || source === undefined) {
-      return this.run(message);
+    const now = this.options.now ?? (() => new Date());
+
+    let envelope: CloudEventEnvelope;
+    try {
+      envelope = parseEnvelope(message.attributes);
+      if (this.options.validation?.requireDataschema === true && envelope.dataschema === undefined) {
+        throw new Error("ce-dataschema is required but absent");
+      }
+    } catch (error) {
+      // Rejected ahead of coalescing, not inside run(). The de-duplication key is built from ce-id
+      // and ce-source, so a message whose envelope has not been validated has no identity worth
+      // keying on: two malformed messages both carrying an empty ce-id would share one outcome, and
+      // the transport would ack both while only the first was ever copied to the dead-letter topic.
+      return this.reject(message, {
+        policy: this.options.validation?.onInvalidEnvelope ?? "dead-letter",
+        stage: "envelope",
+        reason: asMessage(error),
+        now,
+      });
     }
 
-    const dedupeKey = idempotencyKeyToString(this.keyFor(source, id));
+    if (this.options.idempotencyStore === undefined) return this.run(envelope, message, now);
+
+    const dedupeKey = idempotencyKeyToString(this.keyFor(envelope.source, envelope.id));
     const running = this.inProcess.get(dedupeKey);
     if (running !== undefined) return running;
 
-    const pending = this.run(message).finally(() => this.inProcess.delete(dedupeKey));
+    const pending = this.run(envelope, message, now).finally(() => this.inProcess.delete(dedupeKey));
     this.inProcess.set(dedupeKey, pending);
     return pending;
   }
@@ -92,24 +109,8 @@ export class MessagePipeline {
     return { consumer: this.options.consumer ?? "werken", source, id };
   }
 
-  private async run(message: IncomingMessage): Promise<Outcome> {
-    const now = this.options.now ?? (() => new Date());
+  private async run(envelope: CloudEventEnvelope, message: IncomingMessage, now: () => Date): Promise<Outcome> {
     const telemetry = this.options.telemetry;
-
-    let envelope;
-    try {
-      envelope = parseEnvelope(message.attributes);
-      if (this.options.validation?.requireDataschema === true && envelope.dataschema === undefined) {
-        throw new Error("ce-dataschema is required but absent");
-      }
-    } catch (error) {
-      return this.reject(message, {
-        policy: this.options.validation?.onInvalidEnvelope ?? "dead-letter",
-        stage: "envelope",
-        reason: asMessage(error),
-        now,
-      });
-    }
 
     telemetry?.recordReceived(envelope.type, this.options.subscription);
     // Lateness is an operational signal in its own right, not just a debugging aid: for events that
