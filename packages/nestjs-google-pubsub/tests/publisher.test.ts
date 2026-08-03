@@ -391,4 +391,34 @@ describe("payload encoding", () => {
     expect(encode).toHaveBeenCalledWith(TYPE, { id: "e1", station: "SCL" });
     expect(published[0].data.toString()).toBe('{"id":"e1","station":{"string":"SCL"}}');
   });
+
+  // An encoder returning bare bytes cannot say what they are, so every payload was announced as
+  // application/json — protobuf, CBOR, binary Avro and compressed bodies all mislabelled, which
+  // sends a standards-aware consumer to the wrong decoder.
+  test("lets the encoder declare the media type it actually produced", async () => {
+    const { publisher, published } = publisherWith({
+      encode: () => ({ data: Buffer.from([0x08, 0x96, 0x01]), datacontenttype: "application/protobuf" }),
+    });
+
+    await publisher.publish({ type: TYPE, data: { id: "e1" } });
+
+    expect(published[0].data).toEqual(Buffer.from([0x08, 0x96, 0x01]));
+    expect(published[0].attributes["ce-datacontenttype"]).toBe("application/protobuf");
+  });
+
+  test("keeps declaring JSON for an encoder that returns bare bytes", async () => {
+    const { publisher, published } = publisherWith({ encode: () => Buffer.from('{"avro":"json"}') });
+
+    await publisher.publish({ type: TYPE, data: { id: "e1" } });
+
+    expect(published[0].attributes["ce-datacontenttype"]).toBe("application/json");
+  });
+
+  test("rejects a media type that is not one, rather than emitting an invalid envelope", async () => {
+    const { publisher } = publisherWith({
+      encode: () => ({ data: Buffer.from("x"), datacontenttype: "not a media type" }),
+    });
+
+    await expect(publisher.publish({ type: TYPE, data: {} })).rejects.toThrow(/datacontenttype/);
+  });
 });

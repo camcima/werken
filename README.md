@@ -100,8 +100,9 @@ Everything else is optional and degrades sensibly: `ce-datacontenttype` defaults
 attribute is preserved verbatim on `ctx.extensions` rather than dropped.
 
 **Your payload is not constrained.** Werken parses the body as JSON, or decodes it as Avro when you
-configure `schemaRegistry` — and with your own `encode`, it can be any format you like. Producers do
-not restructure their events to adopt this; they set four attributes alongside them.
+configure `schemaRegistry` — and with your own `encode`, it can be any format you like, declared
+honestly: return `{ data, datacontenttype }` and the event says what the bytes actually are.
+Producers do not restructure their events to adopt this; they set four attributes alongside them.
 
 ### If a message arrives without an envelope
 
@@ -711,12 +712,22 @@ const publisher = createEventPublisher({
   topicResolver: (type) => topicMap[type],
   encode: (type, data) => Buffer.from(readerTypes[type].toString(data)), // Avro JSON
 });
+```
 
-await publisher.publish({
-  type: "com.example.order.placed.v1",
-  data: { orderId: "abc" },
-  subject: "abc",
-});
+`encode` returning bare bytes declares `application/json`, which is right for the Avro-JSON case
+above. For anything else, say so — otherwise a standards-aware consumer picks its decoder from a
+lie:
+
+```ts
+encode: ((type, data) => ({
+  data: protobufFor(type).encode(data).finish(),
+  datacontenttype: "application/protobuf",
+}),
+  await publisher.publish({
+    type: "com.example.order.placed.v1",
+    data: { orderId: "abc" },
+    subject: "abc",
+  }));
 ```
 
 The publisher generates a time-ordered UUIDv7 `ce-id`, stamps `ce-time` and `ingestiontime`

@@ -47,6 +47,7 @@ export { createTelemetry } from "./telemetry.js";
 export type { EventLogFields } from "./logging.js";
 export { eventLogFields, withEventFields } from "./logging.js";
 export type {
+  EncodedPayload,
   EventPublisher,
   EventPublisherOptions,
   PublishFailure,
