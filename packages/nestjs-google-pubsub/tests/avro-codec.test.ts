@@ -117,6 +117,47 @@ describe("strict mode", () => {
   });
 });
 
+/**
+ * Verified against the emulator: Pub/Sub sets googclient_schemaname, googclient_schemarevisionid
+ * and googclient_schemaencoding together, for both JSON and BINARY topics, or sets none of them.
+ * A partial set therefore did not come from Pub/Sub — and since a publisher cannot forge attributes
+ * beginning with "goog", it means something is wrong rather than that the topic is unschematised.
+ * Guessing which half to trust is how a message gets read against the wrong shape.
+ */
+describe("incoherent schema metadata", () => {
+  const body = () => Buffer.from(JSON.stringify({ id: "e1" }));
+
+  test("refuses a schema name with no revision", async () => {
+    await expect(codecWith().decode(body(), { name: NAME, encoding: "JSON" })).rejects.toThrow(SchemaDecodeError);
+  });
+
+  test("refuses a revision with no schema name", async () => {
+    await expect(codecWith().decode(body(), { revision: REV1, encoding: "JSON" })).rejects.toThrow(SchemaDecodeError);
+  });
+
+  test("refuses a schema with no encoding", async () => {
+    await expect(codecWith().decode(body(), { name: NAME, revision: REV1 })).rejects.toThrow(SchemaDecodeError);
+  });
+
+  test("refuses an encoding on its own", async () => {
+    await expect(codecWith().decode(body(), { encoding: "JSON" })).rejects.toThrow(SchemaDecodeError);
+  });
+
+  // Anything that is not JSON took the binary branch, so a typo or a future encoding would be
+  // decoded as Avro binary rather than reported.
+  test("refuses an encoding that is neither JSON nor BINARY", async () => {
+    await expect(
+      codecWith().decode(body(), { name: NAME, revision: REV1, encoding: "PROTOCOL_BUFFER" }),
+    ).rejects.toThrow(SchemaDecodeError);
+  });
+
+  test("still refuses incoherent metadata when strict is off", async () => {
+    const codec = codecWith({ strict: false, logger: { debug: vi.fn(), warn: vi.fn() } });
+
+    await expect(codec.decode(body(), { name: NAME, encoding: "JSON" })).rejects.toThrow(SchemaDecodeError);
+  });
+});
+
 describe("caching", () => {
   test("fetches a revision once across many messages", async () => {
     const fetchWriterSchema = vi.fn(async () => JSON.stringify(WRITER_V1));
@@ -217,6 +258,48 @@ describe("non-strict fallback", () => {
     const body = avro.Type.forSchema(WRITER_V1 as avro.Schema).toBuffer({ id: "e1", station: null });
 
     await expect(codec.decode(body, meta("BINARY"))).rejects.toThrow(SchemaDecodeError);
+  });
+
+  // `strict` is documented as controlling what happens when the writer schema cannot be *fetched*.
+  // Everything below is a different failure: the schema resolved fine and this consumer still
+  // cannot read it correctly. Falling back would hand the handler Avro-JSON shapes, or silently
+  // mis-read fields the writer changed — a correctness failure, not an availability trade.
+  test("still fails on a missing reader type, which no fallback can substitute for", async () => {
+    const codec = codecWith({
+      strict: false,
+      logger: { debug: vi.fn(), warn: vi.fn() },
+      readerTypeFor: () => undefined,
+    });
+
+    await expect(codec.decode(Buffer.from(JSON.stringify({ id: "e1" })), meta("JSON"))).rejects.toThrow(
+      SchemaDecodeError,
+    );
+  });
+
+  test("still fails when the writer schema definition is not valid Avro", async () => {
+    const codec = codecWith({
+      strict: false,
+      logger: { debug: vi.fn(), warn: vi.fn() },
+      fetchWriterSchema: async () => JSON.stringify({ type: "record", name: "Broken", fields: "not-a-list" }),
+    });
+
+    await expect(codec.decode(Buffer.from(JSON.stringify({ id: "e1" })), meta("JSON"))).rejects.toThrow(
+      SchemaDecodeError,
+    );
+  });
+
+  test("still fails when the writer cannot be resolved into the reader", async () => {
+    const codec = codecWith({
+      strict: false,
+      logger: { debug: vi.fn(), warn: vi.fn() },
+      // A different record entirely: no resolution path exists from this writer to the reader.
+      fetchWriterSchema: async () =>
+        JSON.stringify({ type: "record", name: "Unrelated", fields: [{ name: "x", type: "int" }] }),
+    });
+
+    await expect(codec.decode(Buffer.from(JSON.stringify({ id: "e1" })), meta("JSON"))).rejects.toThrow(
+      SchemaDecodeError,
+    );
   });
 
   test("names the underlying cause, so an operator can tell outage from misconfiguration", async () => {

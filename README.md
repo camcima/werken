@@ -571,6 +571,16 @@ Behaviour that matters:
 - **Bounded.** LRU plus TTL, so corrections get picked up.
 - **An unknown revision is normal**, not an error — a producer rolling out ahead of its consumers is
   the expected steady state. Logged at debug.
+- **`strict` covers one failure, not all of them.** It decides what happens when the writer schema
+  cannot be _fetched_ — a Schema Service outage, a client without schema support, a revision that has
+  not propagated. `strict: false` decodes the body as plain JSON in that case, trading correctness
+  for availability. It does **not** loosen anything else: a missing reader type, a definition that is
+  not valid Avro, and a writer the reader cannot resolve stay fatal whatever `strict` says, because
+  there the schema is known and the message still cannot be read correctly.
+- **Schema metadata is all-or-nothing.** Pub/Sub sets the schema name, revision and encoding
+  together or sets none of them, so a partial set is rejected rather than treated as an
+  unschematised topic, and an encoding that is neither `JSON` nor `BINARY` is rejected rather than
+  guessed at.
 
 > ⚠️ **Pub/Sub's `JSON` encoding is Avro JSON, not plain JSON.** A nullable union is
 > `{"string":"SCL"}`, not `"SCL"`, and plain JSON is _rejected_ outright by a schema-attached topic.

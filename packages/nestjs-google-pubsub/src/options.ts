@@ -29,7 +29,15 @@ export interface SchemaRegistryOptions {
    * registry. Returning undefined means the consumer cannot read that schema at all.
    */
   readerTypeFor: (schemaName: string) => avro.Type | undefined;
-  /** Fail closed if a writer schema cannot be fetched. Default true. */
+  /**
+   * Fail closed if a writer schema cannot be *fetched* — a Schema Service outage, a client without
+   * schema support, a revision that has not propagated. Default true.
+   *
+   * `false` trades correctness for availability on that one failure only, decoding the body as
+   * plain JSON instead. It does not loosen anything else: a missing reader type, a definition that
+   * is not valid Avro, a writer the reader cannot resolve, and incoherent schema metadata all stay
+   * fatal, because there the schema is known and the message still cannot be read correctly.
+   */
   strict?: boolean;
   /** Default 1 hour. */
   cacheTtlMs?: number;
