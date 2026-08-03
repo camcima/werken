@@ -3,7 +3,7 @@ import { optionalRequire } from "./optional-require.cjs";
 import type { Outcome } from "./pipeline.js";
 
 /** The envelope fields telemetry needs, so this module does not depend on the full type. */
-export interface TelemetryEnvelope {
+interface TelemetryEnvelope {
   readonly id: string;
   readonly type: string;
   readonly source: string;
@@ -12,7 +12,7 @@ export interface TelemetryEnvelope {
   readonly tracestate?: string;
 }
 
-export interface MessageSpanInput {
+interface MessageSpanInput {
   readonly envelope: TelemetryEnvelope;
   readonly subscription: string;
   readonly messageId: string;
@@ -28,7 +28,7 @@ export interface TelemetryOptions {
   meterProvider?: MeterProvider;
 }
 
-export type SchemaCacheResult = "hit" | "miss";
+type SchemaCacheResult = "hit" | "miss";
 
 export interface Telemetry {
   withMessageSpan<T>(input: MessageSpanInput, work: () => Promise<T>): Promise<T>;

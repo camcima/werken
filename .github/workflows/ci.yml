@@ -41,6 +41,7 @@ jobs:
       # Acceptance criteria 11 and 13 (§9). Also enforced pre-commit via lefthook.
       - run: pnpm run lint:no-deep-imports
       - run: pnpm run lint:neutrality
+      - run: pnpm run lint:dead-code
       - run: pnpm run test:coverage
       # Uploaded from one leg only. The matrix legs produce identical coverage, so uploading both
       # just adds noise to the Codecov report.

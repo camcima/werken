@@ -34,8 +34,8 @@ export interface ResolvedRoute {
  * Telemetry labels for messages that never reached a route. Bounded stand-ins, so a malformed or
  * unrecognised producer cannot mint an unbounded number of metric series.
  */
-export const UNMATCHED_ROUTE = "<unmatched>";
-export const INVALID_ROUTE = "<invalid>";
+const UNMATCHED_ROUTE = "<unmatched>";
+const INVALID_ROUTE = "<invalid>";
 
 export interface ValidationOptions {
   /** Default 'dead-letter'. */
@@ -77,7 +77,7 @@ export interface MessagePipelineOptions {
  * subscription's own retention plus any replay window — so this is deliberately far longer than a
  * redelivery cycle.
  */
-export const DEFAULT_IDEMPOTENCY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const DEFAULT_IDEMPOTENCY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export class MessagePipeline {
   /**

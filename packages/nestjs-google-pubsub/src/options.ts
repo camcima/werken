@@ -175,15 +175,15 @@ export interface WerkenTransportOptions {
   createClient?: (options: WerkenTransportOptions) => PubSubClientLike;
 }
 
-export const DEFAULT_FLOW_CONTROL: Required<FlowControlOptions> = {
+const DEFAULT_FLOW_CONTROL: Required<FlowControlOptions> = {
   maxOutstandingMessages: 50,
   maxOutstandingBytes: 20 * 1024 * 1024,
   allowExcessMessages: false,
 };
 
-export const DEFAULT_MAX_STREAMS = 1;
-export const DEFAULT_ACK_DEADLINE_MS = 60_000;
-export const DEFAULT_MAX_EXTENSION_MS = 600_000;
+const DEFAULT_MAX_STREAMS = 1;
+const DEFAULT_ACK_DEADLINE_MS = 60_000;
+const DEFAULT_MAX_EXTENSION_MS = 600_000;
 export const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 30_000;
 
 /**

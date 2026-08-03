@@ -101,7 +101,7 @@ export class PubSubDeadLetterPublisher implements DeadLetterPublisher {
 }
 
 /** Builds the attribute set for a dead-lettered message: the original plus provenance. */
-export function deadLetterAttributes(request: DeadLetterRequest): Record<string, string> {
+function deadLetterAttributes(request: DeadLetterRequest): Record<string, string> {
   const orderingKey = request.message.orderingKey;
   return {
     ...request.message.attributes,

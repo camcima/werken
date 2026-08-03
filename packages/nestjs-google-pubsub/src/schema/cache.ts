@@ -26,8 +26,8 @@ interface Entry<T> {
   expiresAt: number;
 }
 
-export const DEFAULT_MAX_CACHED_REVISIONS = 200;
-export const DEFAULT_SCHEMA_CACHE_TTL_MS = 3_600_000;
+const DEFAULT_MAX_CACHED_REVISIONS = 200;
+const DEFAULT_SCHEMA_CACHE_TTL_MS = 3_600_000;
 
 /**
  * Bounded, single-flight cache keyed by schema **revision id**.

@@ -17,7 +17,7 @@ export class AmbiguousPatternError extends Error {
 const WILDCARD = "*";
 const SEPARATOR = ".";
 
-export const DEFAULT_MAX_CACHED_TYPES = 1024;
+const DEFAULT_MAX_CACHED_TYPES = 1024;
 
 export interface PatternRouterOptions {
   /**
