@@ -90,7 +90,7 @@ jobs:
       # integration suite needs dist/ present. That path is also the most Node-version-sensitive
       # thing here, which is why integration is matrixed too rather than pinned to one major.
       - run: pnpm run build
-      - run: pnpm vitest run --coverage packages/*/tests/integration
+      - run: pnpm vitest run --coverage --config vitest.integration.config.ts
         env:
           PUBSUB_EMULATOR_HOST: localhost:8085
           PUBSUB_PROJECT_ID: werken-ci

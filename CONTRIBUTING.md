@@ -49,11 +49,13 @@ The suite is split in two, and each half runs in its own CI job:
 | `pnpm test`                 | unit tests            | nothing                |
 | `pnpm run test:integration` | the integration suite | `docker compose up -d` |
 
-`pnpm test` reports the integration files as **skipped**, which is expected: they need a broker and
-a database, and a bare unit run has neither. Nothing is skipped in the half that owns them —
-`pnpm run test:integration` sets `WERKEN_REQUIRE_INTEGRATION=1`, which turns a skip into a failure
-rather than letting it pass quietly. CI sets the same flag, so the integration job cannot go green
-without actually running.
+Neither command reports skipped tests, and that is deliberate. The two suites are separated by
+config — `vitest.config.ts` excludes `tests/integration/**`, and `vitest.integration.config.ts`
+owns it — rather than by runtime `skipIf` alone. A run that reports "6 skipped" is
+indistinguishable from one where those tests silently stopped working, and that ambiguity is the
+problem worth removing. On top of that, `pnpm run test:integration` sets
+`WERKEN_REQUIRE_INTEGRATION=1`, which turns a missing backend into a failure instead of a skip. CI
+sets the same flag, so the integration job cannot go green without actually running.
 
 Integration tests use the Pub/Sub **emulator**, which supports schemas, so no GCP project or
 credentials are needed:
