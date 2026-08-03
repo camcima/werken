@@ -20,6 +20,12 @@ Write an event consumer as an ordinary Nest controller and get schema resolution
 validation, idempotency, dead-lettering, distributed tracing and clean shutdown without writing any
 of them yourself.
 
+> [!IMPORTANT]
+> **Your producers must emit CloudEvents.** Werken routes on the `ce-type` message attribute, so a
+> Pub/Sub message that arrives without a CloudEvents 1.0 envelope cannot be handled at all — it is
+> dead-lettered rather than delivered. In practice that means four Pub/Sub attributes; your payload
+> itself is untouched and can be anything. See [Event requirements](#event-requirements).
+
 _Werken_ is Mapudungun for **messenger** — the emissary who carries word between communities.
 
 ```ts
@@ -76,6 +82,47 @@ de-duplication, tracing, draining — happens around the handler.
 | [`@werken/cloudevents`](packages/cloudevents)                                       | CloudEvents 1.0 envelope types, validation and Pub/Sub attribute binding. Zero runtime dependencies, no GCP or Nest imports. |
 | [`@werken/nestjs-google-pubsub`](packages/nestjs-google-pubsub)                     | The transport, publisher, Avro codec and idempotency.                                                                        |
 | [`@werken/nestjs-google-pubsub/testing`](packages/nestjs-google-pubsub/src/testing) | In-memory test harness. A subpath rather than a package, so it can never version-skew from the transport it wraps.           |
+
+## Event requirements
+
+Werken consumes **CloudEvents 1.0 in binary content mode**: the envelope travels in Pub/Sub message
+attributes and the body is your payload, untouched. Every message must carry four attributes:
+
+| Attribute        | Notes                                                                 |
+| ---------------- | --------------------------------------------------------------------- |
+| `ce-specversion` | Must be exactly `1.0`. Any other value, including `0.3`, is rejected. |
+| `ce-id`          | Unique within the source. Half of the idempotency key.                |
+| `ce-source`      | The producing system, as a URI-reference. The other half of that key. |
+| `ce-type`        | The routing key — what `@EventPattern` matches on.                    |
+
+Everything else is optional and degrades sensibly: `ce-datacontenttype` defaults to
+`application/json`, `ce-time` falls back to the Pub/Sub publish time, and any unrecognised `ce-*`
+attribute is preserved verbatim on `ctx.extensions` rather than dropped.
+
+**Your payload is not constrained.** Werken parses the body as JSON, or decodes it as Avro when you
+configure `schemaRegistry` — and with your own `encode`, it can be any format you like. Producers do
+not restructure their events to adopt this; they set four attributes alongside them.
+
+### If a message arrives without an envelope
+
+It is never delivered to a handler. `validation.onInvalidEnvelope` decides its fate — `dead-letter`
+(the default), `nack`, or `ack` to drop it — and that is the whole range of outcomes. There is no
+hook to substitute a different envelope format: parsing runs before routing, decode and everything
+else.
+
+This is deliberate rather than incidental. Routing has no key without `ce-type`, and duplicate
+suppression has nothing to deduplicate by without `ce-source` and `ce-id`.
+
+### Producers you do not control
+
+In increasing order of cost:
+
+- **Have them set the four attributes.** Much the cheapest option — no payload change, and no need
+  to take a dependency on this library to do it.
+- **Put a transform in front**, consuming from their topic and republishing with the envelope
+  attached.
+- **Use [`@werken/cloudevents`](packages/cloudevents) directly** and drive the Pub/Sub SDK yourself.
+  It is standalone, with zero dependencies and no GCP or Nest imports.
 
 ## Installation
 

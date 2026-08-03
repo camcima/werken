@@ -11,3 +11,6 @@ coverage/
 # Working notes, not shipped artefacts
 docs/spec-amendments.md
 docs/spikes/
+
+# Browser automation artifacts (playwright-cli snapshots and console logs)
+.playwright-cli/
