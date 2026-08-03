@@ -1,5 +1,6 @@
 import { uuidv7 } from "uuidv7";
 import { toPubSubAttributes } from "@werken/cloudevents";
+import { optionalRequire } from "./optional-require.cjs";
 import type { PubSubClientLike } from "./options.js";
 import { applyResourcePrefix, assertResourcePrefixSafe } from "./resource-name.js";
 
@@ -117,9 +118,9 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
  * producer's trace. Absent OTel, or outside a span, this contributes nothing.
  */
 function currentTraceparent(): string | undefined {
+  const api = optionalRequire("@opentelemetry/api") as typeof import("@opentelemetry/api") | undefined;
+  if (api === undefined) return undefined;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports -- optional peer dependency
-    const api = require("@opentelemetry/api") as typeof import("@opentelemetry/api");
     const carrier: Record<string, string> = {};
     api.propagation.inject(api.context.active(), carrier);
     return carrier["traceparent"];

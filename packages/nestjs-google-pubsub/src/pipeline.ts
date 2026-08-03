@@ -1,4 +1,5 @@
 import { parseEnvelope } from "@werken/cloudevents";
+import type { CloudEventEnvelope } from "@werken/cloudevents";
 import { buildContext } from "./context.js";
 import { asTerminalFailure } from "./dead-letter.js";
 import type { DeadLetterPublisher, DeadLetterStage } from "./dead-letter.js";
@@ -111,14 +112,38 @@ export class MessagePipeline {
 
     const handler = this.options.resolveHandler(envelope.type);
     if (handler === null) {
-      return this.reject(message, {
+      const outcome = await this.reject(message, {
         policy: this.options.onUnhandledPattern ?? "ack",
         stage: "unhandled",
         reason: `no handler registered for ${envelope.type}`,
         now,
       });
+      telemetry?.recordOutcome(envelope.type, outcome);
+      return outcome;
     }
 
+    // The message span opens once a handler is known (§5.2), covering the idempotency check,
+    // decode, the handler and the idempotency record — parented on the producer's ce-traceparent
+    // so the werken.decode/werken.handler child spans join the producer's trace.
+    const work = () => this.dispatch(handler, envelope, message, now);
+    const result =
+      telemetry === undefined
+        ? await work()
+        : await telemetry.withMessageSpan(
+            { envelope, subscription: this.options.subscription, messageId: message.id },
+            work,
+          );
+    telemetry?.recordOutcome(envelope.type, result);
+    return result === "skipped_duplicate" ? "ack" : result;
+  }
+
+  private async dispatch(
+    handler: EventHandler,
+    envelope: CloudEventEnvelope,
+    message: IncomingMessage,
+    now: () => Date,
+  ): Promise<Outcome | "skipped_duplicate"> {
+    const telemetry = this.options.telemetry;
     const store = this.options.idempotencyStore;
     const key = this.keyFor(envelope.source, envelope.id);
     // Built before the check so the store can resolve per-message state (a connection, a tenant, a
@@ -130,8 +155,9 @@ export class MessagePipeline {
         // processed must still be acked even if its schema has since become unreadable.
         if (await store.has(key, ctx)) {
           this.options.logger?.debug?.(withEventFields("werken: skipping duplicate", message));
-          telemetry?.recordOutcome(envelope.type, "skipped_duplicate");
-          return "ack";
+          // The caller records this as skipped_duplicate rather than a second ack, and maps it
+          // back to an ack for the transport.
+          return "skipped_duplicate";
         }
       } catch (error) {
         // Treating an unreadable store as "not seen" would reprocess every message during an

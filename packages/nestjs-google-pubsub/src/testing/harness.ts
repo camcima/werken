@@ -173,7 +173,7 @@ export async function createWerkenTestHarness(options: WerkenTestHarnessOptions)
     async emit(type, data, emitOptions = {}) {
       const attributes = toPubSubAttributes({
         specversion: "1.0",
-        id: emitOptions.id ?? `harness-${sequence + 1}`,
+        id: emitOptions.id ?? `harness-${++sequence}`,
         source: emitOptions.source ?? source,
         type,
         subject: emitOptions.subject,

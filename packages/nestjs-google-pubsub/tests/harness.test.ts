@@ -92,6 +92,19 @@ describe("createWerkenTestHarness", () => {
     expect(harness.get(ThingStore)).toBe(fake);
   });
 
+  // The harness dedupes by ce-id via its default in-memory store, exactly as production would —
+  // so generated ids must be unique per emit, or every event after the first is silently skipped.
+  test("gives each default-id emit a fresh ce-id so none are dropped as duplicates", async () => {
+    harness = await createWerkenTestHarness({ module: WorkerModule });
+
+    await harness.emit(TYPE, { n: 1 });
+    await harness.emit(TYPE, { n: 2 });
+
+    const store = harness.get(ThingStore);
+    expect(store.saved).toHaveLength(2);
+    expect(store.saved[0].ctx.id).not.toBe(store.saved[1].ctx.id);
+  });
+
   test("needs no network, credentials or emulator", async () => {
     delete process.env.PUBSUB_EMULATOR_HOST;
     harness = await createWerkenTestHarness({ module: WorkerModule });
