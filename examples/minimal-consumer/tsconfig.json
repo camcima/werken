@@ -2,9 +2,12 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src",
-    "composite": false,
-    "noEmit": true
+    "rootDir": "src"
   },
-  "include": ["src", "tests"]
+  "include": ["src"],
+  "references": [
+    {
+      "path": "../../packages/nestjs-google-pubsub"
+    }
+  ]
 }
