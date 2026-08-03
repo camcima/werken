@@ -1,0 +1,25 @@
+{
+  "git": {
+    "commit": true,
+    "commitMessage": "chore: release v${version}",
+    "tag": false,
+    "push": false,
+    "requireUpstream": false
+  },
+  "github": {
+    "release": false
+  },
+  "npm": {
+    "publish": false
+  },
+  "hooks": {
+    "before:bump": "pnpm -r exec npm version ${version} --no-git-tag-version --allow-same-version",
+    "after:bump": "pnpm install --lockfile-only"
+  },
+  "plugins": {
+    "@release-it/conventional-changelog": {
+      "preset": "conventionalcommits",
+      "infile": "CHANGELOG.md"
+    }
+  }
+}

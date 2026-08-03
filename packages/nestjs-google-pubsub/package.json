@@ -62,7 +62,7 @@
     "build": "tsc --build"
   },
   "dependencies": {
-    "@werken/cloudevents": "workspace:*",
+    "@werken/cloudevents": "workspace:^",
     "avsc": "^5.7.9",
     "uuidv7": "^1.2.1"
   },

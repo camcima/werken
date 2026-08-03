@@ -147,7 +147,7 @@ importers:
         specifier: ^1.9.0
         version: 1.9.1
       '@werken/cloudevents':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../cloudevents
       avsc:
         specifier: ^5.7.9
