@@ -39,16 +39,15 @@ export interface IdempotencyStore {
 /**
  * Stable string form of a key, for stores that need a single-column identity.
  *
- * Joined on the ASCII unit separator rather than a space: `ce-source` is a URI-reference and
- * `consumer` is caller-supplied, so a printable separator that either could contain would let two
- * different keys flatten to one string — and the collision presents as an event silently dropped
- * as a duplicate, not as an error.
+ * JSON rather than a delimiter: `ce-source` is a URI-reference, `consumer` is caller-supplied and
+ * `ce-id` is producer-controlled, so any separator one of them could contain would let two
+ * different keys flatten to one string — and the collision presents as an event silently dropped as
+ * a duplicate, not as an error. JSON escapes the field boundaries instead of hoping they never
+ * appear, which no unescaped separator can promise.
  */
 export function idempotencyKeyToString(key: IdempotencyKey): string {
-  return [key.consumer, key.source, key.id].join(KEY_SEPARATOR);
+  return JSON.stringify([key.consumer, key.source, key.id]);
 }
-
-const KEY_SEPARATOR = "\u001f";
 
 // ---------------------------------------------------------------------------
 // SQL store

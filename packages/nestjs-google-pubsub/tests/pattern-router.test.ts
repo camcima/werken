@@ -214,3 +214,37 @@ describe("lookup caching", () => {
     expect(r.resolve("org.unmatched")).toBeNull();
   });
 });
+
+/**
+ * Nest represents two @EventPattern handlers for one pattern as a linked list, which
+ * assertNotChained already catches. A caller constructing PatternRouter directly gets no such
+ * marker: duplicate exact entries silently overwrote one another, and duplicate wildcards silently
+ * kept the first. Either way a handler registered in good faith never runs.
+ */
+describe("duplicate entries passed directly", () => {
+  const entries = (pattern: string) =>
+    [
+      [pattern, handler("first")],
+      [pattern, handler("second")],
+    ] as Array<[string, () => void]>;
+
+  test("rejects two exact entries for the same pattern", () => {
+    expect(() => new PatternRouter(entries("com.example.thing.v1"))).toThrow(AmbiguousPatternError);
+  });
+
+  test("rejects two wildcard entries for the same pattern", () => {
+    expect(() => new PatternRouter(entries("com.example.*"))).toThrow(AmbiguousPatternError);
+  });
+
+  test("rejects two catch-all entries", () => {
+    expect(() => new PatternRouter(entries("*"))).toThrow(AmbiguousPatternError);
+  });
+
+  test("names the duplicated pattern", () => {
+    expect(() => new PatternRouter(entries("com.example.thing.v1"))).toThrow(/com\.example\.thing\.v1/);
+  });
+
+  test("still allows distinct patterns that overlap", () => {
+    expect(() => router({ "com.example.thing.v1": handler("exact"), "com.example.*": handler("wild") })).not.toThrow();
+  });
+});

@@ -52,9 +52,21 @@ export class PatternRouter {
   constructor(entries: Iterable<[string, EventHandler]>, options: PatternRouterOptions = {}) {
     this.maxCachedTypes = options.maxCachedTypes ?? DEFAULT_MAX_CACHED_TYPES;
 
+    const seen = new Set<string>();
     for (const [pattern, handler] of entries) {
       assertNotChained(pattern, handler);
       assertSupported(pattern);
+      // Nest signals a duplicate by chaining handlers, which assertNotChained catches. A caller
+      // building this router directly gets no such marker, and without this an exact duplicate
+      // would overwrite the first entry while a duplicate wildcard would keep it — either way a
+      // handler registered in good faith never runs.
+      if (seen.has(pattern)) {
+        throw new AmbiguousPatternError(
+          `werken: pattern ${JSON.stringify(pattern)} is registered more than once. ` +
+            "Exactly one handler runs per message, so the others would silently never execute.",
+        );
+      }
+      seen.add(pattern);
 
       if (pattern === WILDCARD) {
         this.wildcards.push({ prefix: [], handler, pattern });

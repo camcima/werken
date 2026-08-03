@@ -287,3 +287,54 @@ describe("startup failures", () => {
     expect(await listen(transport)).toBeUndefined();
   });
 });
+
+/**
+ * Negative, zero, NaN and non-integer values used to be accepted and only surfaced later as
+ * surprising SDK, timer or SQL behaviour — a flow-control limit of NaN, an ack deadline of -1. The
+ * option path is named exactly, because "invalid configuration" tells you nothing when a transport
+ * has a dozen numbers in it.
+ */
+describe("numeric option validation", () => {
+  const listenTo = async (options: Record<string, unknown>) => {
+    const { client } = fakeClient();
+    const transport = new WerkenPubSubTransport({
+      projectId: "p",
+      subscription: "s",
+      createClient: () => client as never,
+      ...options,
+    } as never);
+    return String(await listen(transport));
+  };
+
+  test.each([
+    ["flowControl.maxOutstandingMessages", { flowControl: { maxOutstandingMessages: 0 } }],
+    ["flowControl.maxOutstandingBytes", { flowControl: { maxOutstandingBytes: -1 } }],
+    ["streaming.maxStreams", { streaming: { maxStreams: 0 } }],
+    ["ackDeadline.initialMs", { ackDeadline: { initialMs: Number.NaN } }],
+    ["ackDeadline.maxExtensionMs", { ackDeadline: { maxExtensionMs: -5 } }],
+    ["shutdownDrainTimeoutMs", { shutdownDrainTimeoutMs: -1 }],
+    ["idempotency.ttlMs", { idempotency: { ttlMs: 0 } }],
+    ["schemaRegistry.cacheTtlMs", { schemaRegistry: { readerTypeFor: (): undefined => undefined, cacheTtlMs: -1 } }],
+    [
+      "schemaRegistry.maxCachedRevisions",
+      { schemaRegistry: { readerTypeFor: (): undefined => undefined, maxCachedRevisions: 0 } },
+    ],
+  ])("rejects an invalid %s, naming it", async (path, options) => {
+    expect(await listenTo(options)).toContain(path);
+  });
+
+  test("rejects a non-integer count rather than letting the SDK round it", async () => {
+    expect(await listenTo({ flowControl: { maxOutstandingMessages: 2.5 } })).toContain("maxOutstandingMessages");
+  });
+
+  test("accepts the defaults", async () => {
+    const { client } = fakeClient();
+    const transport = new WerkenPubSubTransport({
+      projectId: "p",
+      subscription: "s",
+      createClient: () => client as never,
+    });
+
+    expect(await listen(transport)).toBeUndefined();
+  });
+});

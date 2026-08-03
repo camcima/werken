@@ -8,6 +8,7 @@ import { AvroCodec } from "./schema/avro-codec.js";
 import { NoopIdempotencyStore, createSqlIdempotencyStore } from "./idempotency.js";
 import {
   DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS,
+  assertValidOptions,
   toSubscriberOptions,
   type PubSubClientLike,
   type SubscriptionLike,
@@ -122,6 +123,10 @@ export class WerkenPubSubTransport
   }
 
   private async start(): Promise<void> {
+    // Validated before anything connects, so a bad number fails here rather than as surprising SDK,
+    // timer or SQL behaviour much later.
+    assertValidOptions(this.options);
+
     const prefix = this.options.resourcePrefix;
     assertResourcePrefixSafe(prefix, this.options.allowUnsafeResourcePrefix === true, process.env.NODE_ENV);
 
