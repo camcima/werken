@@ -7,7 +7,6 @@ export type {
   SchemaLike,
   SchemaRegistryOptions,
   SubscriberOptionsLike,
-  WerkenPublisherOptions,
   SubscriptionLike,
   TopicLike,
   WerkenTransportOptions,
@@ -47,6 +46,8 @@ export type {
 export { createTelemetry } from "./telemetry.js";
 export type { EventLogFields } from "./logging.js";
 export { eventLogFields, withEventFields } from "./logging.js";
+export type { EventPublisher, EventPublisherOptions, PublishOptions, PublishRequest } from "./publisher.js";
+export { createEventPublisher } from "./publisher.js";
 export type {
   IdempotencyKey,
   IdempotencyStore,

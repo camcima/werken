@@ -1,0 +1,287 @@
+import { context, propagation, trace } from "@opentelemetry/api";
+import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
+import { W3CTraceContextPropagator } from "@opentelemetry/core";
+import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { createEventPublisher } from "@werken/nestjs-google-pubsub";
+import type { PubSubClientLike } from "@werken/nestjs-google-pubsub";
+
+const TYPE = "com.example.thing.happened.v1";
+const SOURCE = "https://example.test/service";
+
+interface Published {
+  topic: string;
+  topicOptions?: unknown;
+  data: Buffer;
+  attributes: Record<string, string>;
+  orderingKey?: string;
+}
+
+function fakeClient() {
+  const published: Published[] = [];
+  let nextId = 0;
+  const client = {
+    topic: vi.fn((topic: string, topicOptions?: unknown) => ({
+      publishMessage: vi.fn(async (m: { data: Buffer; attributes: Record<string, string>; orderingKey?: string }) => {
+        published.push({ topic, topicOptions, ...m });
+        return `msg-${++nextId}`;
+      }),
+    })),
+    subscription: vi.fn(),
+    close: vi.fn(async () => {}),
+  };
+  return { published, client: client as unknown as PubSubClientLike };
+}
+
+function publisherWith(overrides: Partial<Parameters<typeof createEventPublisher>[0]> = {}) {
+  const { published, client } = fakeClient();
+  const publisher = createEventPublisher({
+    source: SOURCE,
+    client,
+    topicResolver: (type: string) => type.replaceAll(".", "-"),
+    ...overrides,
+  });
+  return { publisher, published };
+}
+
+const originalEnv = process.env.NODE_ENV;
+afterEach(() => {
+  process.env.NODE_ENV = originalEnv;
+});
+
+describe("envelope construction", () => {
+  test("returns the published message id", async () => {
+    const { publisher } = publisherWith();
+
+    expect(await publisher.publish({ type: TYPE, data: { hello: "world" } })).toBe("msg-1");
+  });
+
+  test("generates a time-ordered v7 event id", async () => {
+    const { publisher, published } = publisherWith();
+    await publisher.publish({ type: TYPE, data: {} });
+
+    const id = published[0].attributes["ce-id"];
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  });
+
+  // The reason for v7 over v4: ce-id becomes the idempotency table's primary key, so ids arriving
+  // in time order keep inserts at the right-hand edge of the index.
+  test("generates ids that sort in publication order even within a millisecond", async () => {
+    const { publisher, published } = publisherWith();
+    await publisher.publishBatch(Array.from({ length: 200 }, () => ({ type: TYPE, data: {} })));
+
+    const ids = published.map((p) => p.attributes["ce-id"]);
+    expect([...ids].sort()).toEqual(ids);
+  });
+
+  test("sets the configured source, and lets a request override it", async () => {
+    const { publisher, published } = publisherWith();
+    await publisher.publish({ type: TYPE, data: {} });
+    await publisher.publish({ type: TYPE, data: {}, source: "https://other.test/svc" });
+
+    expect(published[0].attributes["ce-source"]).toBe(SOURCE);
+    expect(published[1].attributes["ce-source"]).toBe("https://other.test/svc");
+  });
+
+  test("defaults ce-time to now and honours an explicit occurrence time", async () => {
+    const now = new Date("2026-08-03T10:00:00.000Z");
+    const { publisher, published } = publisherWith({ now: () => now });
+
+    await publisher.publish({ type: TYPE, data: {} });
+    await publisher.publish({ type: TYPE, data: {}, time: new Date("2026-08-01T09:00:00.000Z") });
+
+    expect(published[0].attributes["ce-time"]).toBe("2026-08-03T10:00:00.000Z");
+    expect(published[1].attributes["ce-time"]).toBe("2026-08-01T09:00:00.000Z");
+  });
+
+  // ce-time is when it happened; ingestiontime is when the platform learned of it. Reasoning about
+  // lateness needs both, so the publisher always stamps the second one itself.
+  test("always stamps ingestiontime at publish time", async () => {
+    const now = new Date("2026-08-03T10:00:00.000Z");
+    const { publisher, published } = publisherWith({ now: () => now });
+
+    await publisher.publish({ type: TYPE, data: {}, time: new Date("2026-08-01T09:00:00.000Z") });
+
+    expect(published[0].attributes["ce-ingestiontime"]).toBe("2026-08-03T10:00:00.000Z");
+  });
+
+  test("carries subject, dataschema and extensions through", async () => {
+    const { publisher, published } = publisherWith();
+    await publisher.publish({
+      type: TYPE,
+      data: {},
+      subject: "thing-42",
+      dataschema: "https://schemas.example.test/thing/v1",
+      extensions: { tenantid: "acme" },
+    });
+
+    expect(published[0].attributes["ce-subject"]).toBe("thing-42");
+    expect(published[0].attributes["ce-dataschema"]).toBe("https://schemas.example.test/thing/v1");
+    expect(published[0].attributes["ce-tenantid"]).toBe("acme");
+  });
+
+  test("sets specversion 1.0", async () => {
+    const { publisher, published } = publisherWith();
+    await publisher.publish({ type: TYPE, data: {} });
+
+    expect(published[0].attributes["ce-specversion"]).toBe("1.0");
+  });
+});
+
+describe("topic resolution", () => {
+  test("resolves the topic from the event type", async () => {
+    const { publisher, published } = publisherWith();
+    await publisher.publish({ type: TYPE, data: {} });
+
+    expect(published[0].topic).toBe("com-example-thing-happened-v1");
+  });
+
+  test("lets an explicit topic override the resolver", async () => {
+    const { publisher, published } = publisherWith();
+    await publisher.publish({ type: TYPE, data: {} }, { topic: "explicit-topic" });
+
+    expect(published[0].topic).toBe("explicit-topic");
+  });
+
+  test("fails clearly when no topic can be resolved for a type", async () => {
+    const { publisher } = publisherWith({ topicResolver: () => undefined });
+
+    await expect(publisher.publish({ type: TYPE, data: {} })).rejects.toThrow(new RegExp(TYPE));
+  });
+
+  test("applies the resource prefix to the resolved topic", async () => {
+    const { publisher, published } = publisherWith({ resourcePrefix: "alice" });
+    await publisher.publish({ type: TYPE, data: {} });
+
+    expect(published[0].topic).toBe("alice-com-example-thing-happened-v1");
+  });
+
+  // A scoped consumer reading from an unscoped topic is worse than no scoping, so the publisher
+  // enforces the same production guard as the transport.
+  test("refuses to scope in production", () => {
+    process.env.NODE_ENV = "production";
+
+    expect(() => publisherWith({ resourcePrefix: "alice" })).toThrow(/production/i);
+  });
+
+  test("allows scoping in production behind the explicit escape hatch", () => {
+    process.env.NODE_ENV = "production";
+
+    expect(() => publisherWith({ resourcePrefix: "alice", allowUnsafeResourcePrefix: true })).not.toThrow();
+  });
+});
+
+describe("ordering", () => {
+  test("does not set an ordering key when ordering is off", async () => {
+    const { publisher, published } = publisherWith();
+    await publisher.publish({ type: TYPE, data: {}, subject: "thing-42" });
+
+    expect(published[0].orderingKey).toBeUndefined();
+  });
+
+  test("derives the ordering key from subject when ordering is on", async () => {
+    const { publisher, published } = publisherWith({ ordering: true });
+    await publisher.publish({ type: TYPE, data: {}, subject: "thing-42" });
+
+    expect(published[0].orderingKey).toBe("thing-42");
+  });
+
+  test("lets an explicit ordering key win", async () => {
+    const { publisher, published } = publisherWith({ ordering: true });
+    await publisher.publish({ type: TYPE, data: {}, subject: "thing-42", orderingKey: "custom" });
+
+    expect(published[0].orderingKey).toBe("custom");
+  });
+
+  // The SDK ignores orderingKey unless the Topic itself was constructed with messageOrdering.
+  test("constructs the topic with messageOrdering enabled", async () => {
+    const { publisher, published } = publisherWith({ ordering: true });
+    await publisher.publish({ type: TYPE, data: {}, subject: "thing-42" });
+
+    expect(published[0].topicOptions).toMatchObject({ messageOrdering: true });
+  });
+});
+
+describe("batch", () => {
+  test("publishes every request and returns their ids in order", async () => {
+    const { publisher, published } = publisherWith();
+
+    const ids = await publisher.publishBatch([
+      { type: TYPE, data: { n: 1 } },
+      { type: TYPE, data: { n: 2 } },
+    ]);
+
+    expect(ids).toEqual(["msg-1", "msg-2"]);
+    expect(published).toHaveLength(2);
+  });
+
+  test("gives each message its own id", async () => {
+    const { publisher, published } = publisherWith();
+    await publisher.publishBatch([
+      { type: TYPE, data: {} },
+      { type: TYPE, data: {} },
+    ]);
+
+    expect(published[0].attributes["ce-id"]).not.toBe(published[1].attributes["ce-id"]);
+  });
+});
+
+describe("trace propagation", () => {
+  const exporter = new InMemorySpanExporter();
+
+  beforeEach(() => {
+    context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
+    propagation.setGlobalPropagator(new W3CTraceContextPropagator());
+    trace.setGlobalTracerProvider(new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] }));
+    exporter.reset();
+  });
+
+  afterEach(() => {
+    trace.disable();
+    propagation.disable();
+    context.disable();
+  });
+
+  // Lifting the ambient context is what lets a consumer's span join the producer's trace.
+  test("stamps ce-traceparent from the active span", async () => {
+    const { publisher, published } = publisherWith();
+
+    await trace.getTracer("test").startActiveSpan("publishing", async (span) => {
+      await publisher.publish({ type: TYPE, data: {} });
+      span.end();
+    });
+
+    const traceparent = published[0].attributes["ce-traceparent"];
+    expect(traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-\d{2}$/);
+    expect(traceparent).toContain(exporter.getFinishedSpans()[0].spanContext().traceId);
+  });
+
+  test("omits ce-traceparent when there is no active span", async () => {
+    const { publisher, published } = publisherWith();
+    await publisher.publish({ type: TYPE, data: {} });
+
+    expect(published[0].attributes["ce-traceparent"]).toBeUndefined();
+  });
+});
+
+describe("payload encoding", () => {
+  test("sends plain JSON when no encoder is configured", async () => {
+    const { publisher, published } = publisherWith();
+    await publisher.publish({ type: TYPE, data: { hello: "world" } });
+
+    expect(JSON.parse(published[0].data.toString())).toEqual({ hello: "world" });
+    expect(published[0].attributes["ce-datacontenttype"]).toBe("application/json");
+  });
+
+  // SPIKE-1: Pub/Sub rejects plain JSON on a schema'd topic, so encoding must go through the codec
+  // rather than JSON.stringify.
+  test("uses the configured encoder for the body", async () => {
+    const encode = vi.fn(() => Buffer.from('{"id":"e1","station":{"string":"SCL"}}'));
+    const { publisher, published } = publisherWith({ encode });
+
+    await publisher.publish({ type: TYPE, data: { id: "e1", station: "SCL" } });
+
+    expect(encode).toHaveBeenCalledWith(TYPE, { id: "e1", station: "SCL" });
+    expect(published[0].data.toString()).toBe('{"id":"e1","station":{"string":"SCL"}}');
+  });
+});

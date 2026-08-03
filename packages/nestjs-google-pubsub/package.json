@@ -63,7 +63,8 @@
   },
   "dependencies": {
     "@werken/cloudevents": "workspace:*",
-    "avsc": "^5.7.9"
+    "avsc": "^5.7.9",
+    "uuidv7": "^1.2.1"
   },
   "peerDependencies": {
     "@google-cloud/pubsub": "^5.0.0",

@@ -33,18 +33,18 @@ export interface SchemaRegistryOptions {
 
 /** The subset of `@google-cloud/pubsub`'s `Topic` used for dead-letter publishing. */
 export interface TopicLike {
-  publishMessage(message: { data: Buffer; attributes: Record<string, string> }): Promise<unknown>;
+  publishMessage(message: { data: Buffer; attributes: Record<string, string>; orderingKey?: string }): Promise<unknown>;
 }
 
-/** The subset of `@google-cloud/pubsub`'s `PubSub` client this transport uses. */
 /** The subset of `@google-cloud/pubsub`'s `Schema` used to fetch a writer schema by revision. */
 export interface SchemaLike {
   get(): Promise<{ definition?: string | null }>;
 }
 
+/** The subset of `@google-cloud/pubsub`'s `PubSub` client this library uses. */
 export interface PubSubClientLike {
   subscription(name: string, options?: unknown): SubscriptionLike;
-  topic(name: string): TopicLike;
+  topic(name: string, options?: unknown): TopicLike;
   /** Accepts a revision-qualified name (`name@revisionId`) — confirmed in SPIKE-0. */
   schema?(name: string): SchemaLike;
   close(): Promise<void> | void;
@@ -207,24 +207,4 @@ export function toSubscriberOptions(options: WerkenTransportOptions): Subscriber
     minAckDeadlineMs: options.ackDeadline?.initialMs ?? DEFAULT_ACK_DEADLINE_MS,
     maxExtensionTimeMs: options.ackDeadline?.maxExtensionMs ?? DEFAULT_MAX_EXTENSION_MS,
   };
-}
-
-/**
- * Publisher-side configuration (§4.6).
- *
- * `resourcePrefix` and `allowUnsafeResourcePrefix` are repeated here deliberately rather than
- * inherited: both directions must be scoped together. A scoped consumer reading from an unscoped
- * topic is worse than no scoping at all — it looks configured and receives nothing.
- *
- * The publisher itself lands in M9; this shape exists now so the option is not bolted on later.
- */
-export interface WerkenPublisherOptions {
-  /** This service's `ce-source`. */
-  source: string;
-
-  /** Prefix applied to resolved topic names. Development only — see `WerkenTransportOptions`. */
-  resourcePrefix?: string;
-
-  /** Permits `resourcePrefix` while NODE_ENV=production. Almost certainly a mistake. */
-  allowUnsafeResourcePrefix?: boolean;
 }
