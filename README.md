@@ -1,7 +1,7 @@
 <div align="center">
 
 <picture>
-  <img alt="werken" src="assets/logo.svg" width="520">
+  <img alt="werken" src="assets/logo.svg" width="340">
 </picture>
 
 <br>
