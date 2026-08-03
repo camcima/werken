@@ -259,10 +259,16 @@ interface SqlExecutor {
 `RETURNING`, so that is the only thing an adapter ever has to report — for most drivers,
 `rows.length`.
 
-> **This is the one thing to get right.** The failure is silent, not loud. An adapter that always
-> returns `0` makes `tryRecord` report every message as already-processed and **drop all of them**,
-> and makes `has` report every message as new, disabling de-duplication. The snippets below were
-> checked against each driver's actual type definitions, not written from memory.
+> **This is the one thing to get right.** The failure is silent, not loud, and it goes both ways:
+>
+> - An adapter that always returns `0` makes `has` report every message as new, so **de-duplication
+>   is off** — every duplicate is reprocessed. `tryRecord` then reports every write as already
+>   present, so each message also logs a spurious duplicate warning.
+> - An adapter that always returns a **positive** count is the dangerous one: `has` reports every
+>   message as already processed, so every message is acked **without the handler ever running**.
+>
+> The snippets below were checked against each driver's actual type definitions, not written from
+> memory.
 
 ### Schema
 
@@ -704,9 +710,30 @@ await publisher.publish({
 ```
 
 The publisher generates a time-ordered UUIDv7 `ce-id`, stamps `ce-time` and `ingestiontime`
-separately, lifts `traceparent` from the ambient OpenTelemetry context, derives the ordering key
-from `subject`, and resolves the destination topic from the event type. One `Topic` is built per
-destination and reused, so the SDK's own batching actually engages.
+separately, lifts `traceparent` from the ambient OpenTelemetry context, and resolves the destination
+topic from the event type. One `Topic` is built per destination and reused, so the SDK's own
+batching actually engages.
+
+### Ordering
+
+Ordering is **off** unless you ask for it. With `ordering: true` the publisher derives each message's
+ordering key from `subject` (an explicit `orderingKey` on the request still wins), and builds its
+`Topic` with `messageOrdering` — which the SDK requires, or it ignores the key entirely:
+
+```ts
+const publisher = createEventPublisher({
+  source: "https://example.com/orders",
+  client: new PubSub({ projectId }),
+  topicResolver: (type) => topicMap[type],
+  ordering: true, // without this, `subject` is not used as an ordering key
+});
+```
+
+Without `ordering: true`, `subject` is not used as an ordering key. An explicit `orderingKey` on the
+request is still handed to the SDK, but the `Topic` was not built with `messageOrdering`, so nothing
+orders on it — and the publish succeeds all the same, with no error to notice. Ordering also needs
+message ordering enabled on the **subscription**, which is a broker-side setting Werken does not
+manage.
 
 ### Batches
 
@@ -739,8 +766,17 @@ try {
 
 ## Observability
 
-One `CONSUMER` span per message named `{ce-type} process`, continuing the producer's trace from
-`ce-traceparent`, with child spans for decode and handler.
+One `CONSUMER` span named `{ce-type} process` per message **that reaches a handler**, continuing the
+producer's trace from `ce-traceparent`, with child spans for decode and handler.
+
+Two kinds of message do not get one, which is worth knowing before you go hunting for them in a
+trace:
+
+- **An invalid envelope** is rejected before any telemetry runs, so it produces no span and no
+  metric at all. It shows up in the logs and, by default, in the dead-letter topic.
+- **A message no handler matches** is counted — `werken.messages.received` and
+  `werken.messages.outcome` both see it — but gets no span, because the span opens only once a
+  handler is known.
 
 | Metric                     | Type            | Labels                 |
 | -------------------------- | --------------- | ---------------------- |

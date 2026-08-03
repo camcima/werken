@@ -175,8 +175,8 @@ Werken does not use `ClientProxy`.
 `EventPublisher` is purpose-built instead: it generates a time-ordered UUIDv7 `ce-id` (which becomes
 the idempotency table's primary key, so ordering keeps index inserts local), stamps `ce-time` and
 `ingestiontime` separately, lifts `traceparent` from the ambient OpenTelemetry context, derives the
-ordering key from `subject`, encodes the payload, and resolves the destination topic from the event
-type.
+ordering key from `subject` when `ordering: true` is set, encodes the payload, and resolves the
+destination topic from the event type.
 
 ## 5. What Nest gives you that Werken keeps
 
@@ -186,10 +186,15 @@ Werken is a transport strategy, not a fork. Unchanged:
 - `@EventPattern`, `@Payload()`, `@Ctx()`
 - Guards, interceptors, pipes and exception filters
 - `app.enableShutdownHooks()` driving the drain
-- `Server`'s `status` observable, which `isHealthy()` reads
+- `Server`'s `status` observable, which the transport pushes `connected`/`disconnected` onto
 
 `@Ctx()` yields a `CloudEventContext` — the envelope plus delivery metadata — rather than a
 transport-specific context object.
+
+`isHealthy()` is Werken's own addition, for Cloud Run worker pools that have no HTTP endpoint to
+probe. It reads the subscription's `isOpen` directly rather than the `status` observable, so it goes
+false as soon as the SDK gives up on the stream — the observable only moves on an explicit start or
+close. Prefer the observable when you want to react to changes rather than poll.
 
 ## 6. When the default abstraction is the better choice
 
