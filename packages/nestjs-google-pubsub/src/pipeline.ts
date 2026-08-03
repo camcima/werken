@@ -239,7 +239,16 @@ export class MessagePipeline {
     const store = this.options.idempotencyStore;
     if (store === undefined) return;
     try {
-      await store.tryRecord(key, this.options.idempotencyTtlMs ?? DEFAULT_IDEMPOTENCY_TTL_MS, ctx);
+      const recorded = await store.tryRecord(key, this.options.idempotencyTtlMs ?? DEFAULT_IDEMPOTENCY_TTL_MS, ctx);
+      if (!recorded) {
+        // has() said new, tryRecord() says already present: another replica recorded this event
+        // between the two calls, so the handler has just run a second time and produced a duplicate
+        // side effect. Nothing here can undo it — the point is that it stops being invisible, since
+        // this is precisely the duplicate the store exists to prevent.
+        this.options.logger?.warn(
+          `werken: ${key.id} was already recorded by another consumer — the handler ran on a duplicate`,
+        );
+      }
     } catch (error) {
       // The side effect already happened. Nacking now would guarantee a duplicate; acking risks
       // one only if the write was genuinely lost.

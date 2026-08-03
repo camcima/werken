@@ -152,6 +152,42 @@ describe("store failures", () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
+  // has() said new and tryRecord() says already-present, so another replica recorded the event in
+  // between and this handler has just produced a duplicate side effect. Nothing can undo it, but it
+  // must not pass silently — that duplicate is the whole thing the store exists to prevent.
+  test("reports a duplicate that another consumer recorded first", async () => {
+    const store: IdempotencyStore = { has: async () => false, tryRecord: async () => false };
+    const warnings: string[] = [];
+    const handler = vi.fn();
+
+    const outcome = await pipelineWith(
+      { [TYPE]: handler },
+      {
+        idempotencyStore: store,
+        logger: { warn: (m: unknown) => void warnings.push(String(m)), error: () => {} },
+      },
+    ).handle(message());
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(outcome).toBe("ack");
+    expect(warnings.join("\n")).toMatch(/already recorded/);
+  });
+
+  test("says nothing when the record was written normally", async () => {
+    const store: IdempotencyStore = { has: async () => false, tryRecord: async () => true };
+    const warnings: string[] = [];
+
+    await pipelineWith(
+      { [TYPE]: vi.fn() },
+      {
+        idempotencyStore: store,
+        logger: { warn: (m: unknown) => void warnings.push(String(m)), error: () => {} },
+      },
+    ).handle(message());
+
+    expect(warnings).toEqual([]);
+  });
+
   test("still acks when recording fails after a successful handler", async () => {
     // The side effect already happened. Nacking would guarantee a duplicate; acking risks one only
     // if the store write was genuinely lost.
