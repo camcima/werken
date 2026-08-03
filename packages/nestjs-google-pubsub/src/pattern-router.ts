@@ -17,6 +17,16 @@ export class AmbiguousPatternError extends Error {
 const WILDCARD = "*";
 const SEPARATOR = ".";
 
+export const DEFAULT_MAX_CACHED_TYPES = 1024;
+
+export interface PatternRouterOptions {
+  /**
+   * Upper bound on cached resolutions. `ce-type` is producer-controlled, so the cache must not
+   * grow once per distinct type seen. Default 1024.
+   */
+  maxCachedTypes?: number;
+}
+
 interface WildcardRoute {
   /** Literal segments before the wildcard. Empty for the catch-all. */
   prefix: string[];
@@ -36,9 +46,12 @@ export class PatternRouter {
   private readonly wildcards: WildcardRoute[] = [];
   /** Resolved lookups, so patterns are scanned once per type rather than once per message. */
   private readonly resolved = new Map<string, EventHandler | null>();
+  private readonly maxCachedTypes: number;
   private scans = 0;
 
-  constructor(entries: Iterable<[string, EventHandler]>) {
+  constructor(entries: Iterable<[string, EventHandler]>, options: PatternRouterOptions = {}) {
+    this.maxCachedTypes = options.maxCachedTypes ?? DEFAULT_MAX_CACHED_TYPES;
+
     for (const [pattern, handler] of entries) {
       assertNotChained(pattern, handler);
       assertSupported(pattern);
@@ -60,19 +73,33 @@ export class PatternRouter {
     this.wildcards.sort((a, b) => b.prefix.length - a.prefix.length);
   }
 
-  get stats(): { scans: number } {
-    return { scans: this.scans };
+  get stats(): { scans: number; cached: number } {
+    return { scans: this.scans, cached: this.resolved.size };
   }
 
   resolve(type: string): EventHandler | null {
+    // With no wildcard registered there is nothing to scan: hits and misses alike are already a
+    // single Map lookup, so a cache would only add a second one and a Map that grows forever.
+    if (this.wildcards.length === 0) return this.exact.get(type) ?? null;
+
     const cached = this.resolved.get(type);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined) {
+      // Re-insert to mark most-recently-used; Map preserves insertion order.
+      this.resolved.delete(type);
+      this.resolved.set(type, cached);
+      return cached;
+    }
 
     this.scans++;
     const handler = this.scan(type);
     // Misses are cached too: a subscription legitimately carries types this consumer ignores, and
     // rescanning for each of them is pure waste.
     this.resolved.set(type, handler);
+    while (this.resolved.size > this.maxCachedTypes) {
+      const oldest = this.resolved.keys().next();
+      if (oldest.done === true) break;
+      this.resolved.delete(oldest.value);
+    }
     return handler;
   }
 

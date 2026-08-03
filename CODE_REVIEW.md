@@ -4,10 +4,17 @@ Date: 2026-08-03. Scope: full source of `@werken/cloudevents` and `@werken/nestj
 the test harness, the example, build/CI tooling, and all documentation (README, docs/, package
 metadata). Reviewed at commit `e0d620a`.
 
-> **Status:** the three high-severity findings (#1 ESM telemetry loading, #2 span/outcome wiring,
-> #3 harness id reuse) were fixed on 2026-08-03, each with a regression test written first —
-> see `tests/integration/dist-smoke.integration.test.ts`, `tests/pipeline-telemetry.test.ts` and
-> the two-emit test in `tests/harness.test.ts`. The sections below describe the code as reviewed.
+> **Status:** all eight high- and medium-severity findings (#1–#8) were fixed on 2026-08-03, each
+> with a regression test written first — see `tests/integration/dist-smoke.integration.test.ts`,
+> `tests/pipeline-telemetry.test.ts`, and the new cases in `tests/harness.test.ts`,
+> `tests/lifecycle.test.ts`, `tests/pattern-router.test.ts` and `tests/publisher.test.ts`. The low
+> severity items and the documentation-parity gaps in §Docs remain open. The sections below
+> describe the code as reviewed.
+>
+> Two fixes changed behaviour worth knowing about: `publishBatch` now issues all publishes before
+> awaiting (still in request order) and throws `PartialPublishError` on partial failure, and
+> `PatternRouter` no longer caches at all when no wildcard is registered, since exact lookups are
+> already O(1).
 
 ## Verdict
 

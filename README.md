@@ -620,7 +620,37 @@ await publisher.publish({
 
 The publisher generates a time-ordered UUIDv7 `ce-id`, stamps `ce-time` and `ingestiontime`
 separately, lifts `traceparent` from the ambient OpenTelemetry context, derives the ordering key
-from `subject`, and resolves the destination topic from the event type.
+from `subject`, and resolves the destination topic from the event type. One `Topic` is built per
+destination and reused, so the SDK's own batching actually engages.
+
+### Batches
+
+`publishBatch` issues every publish before awaiting any — in request order, which is what preserves
+ordering per ordering key — and returns the message ids:
+
+```ts
+const ids = await publisher.publishBatch([
+  { type: "com.example.order.placed.v1", data: { orderId: "abc" }, subject: "abc" },
+  { type: "com.example.order.placed.v1", data: { orderId: "def" }, subject: "def" },
+]);
+```
+
+Pub/Sub has no multi-message transaction, so a batch can fail part-way with the earlier messages
+already published and impossible to unsend. That throws `PartialPublishError`, which names both
+sides so you can retry **only** the failures — retrying the whole batch would duplicate everything
+that already went out:
+
+```ts
+try {
+  await publisher.publishBatch(requests);
+} catch (error) {
+  if (error instanceof PartialPublishError) {
+    error.published; // [{ index, messageId }] — already sent, do not resend
+    error.failures; // [{ index, type, cause }] — safe to retry
+  }
+  throw error;
+}
+```
 
 ## Observability
 

@@ -46,9 +46,22 @@ export type {
 export { createTelemetry } from "./telemetry.js";
 export type { EventLogFields } from "./logging.js";
 export { eventLogFields, withEventFields } from "./logging.js";
-export type { EventPublisher, EventPublisherOptions, PublishOptions, PublishRequest } from "./publisher.js";
-export { createEventPublisher } from "./publisher.js";
-export { AmbiguousPatternError, InvalidPatternError, PatternRouter } from "./pattern-router.js";
+export type {
+  EventPublisher,
+  EventPublisherOptions,
+  PublishFailure,
+  PublishOptions,
+  PublishRequest,
+  PublishSuccess,
+} from "./publisher.js";
+export { PartialPublishError, createEventPublisher } from "./publisher.js";
+export type { PatternRouterOptions } from "./pattern-router.js";
+export {
+  AmbiguousPatternError,
+  DEFAULT_MAX_CACHED_TYPES,
+  InvalidPatternError,
+  PatternRouter,
+} from "./pattern-router.js";
 export type {
   IdempotencyKey,
   IdempotencyStore,

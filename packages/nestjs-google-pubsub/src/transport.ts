@@ -181,6 +181,9 @@ export class WerkenPubSubTransport
     });
 
     this.subscription.on("error", (error: unknown) => {
+      // Logged as well as emitted. Registering an `on('error')` listener is optional, and a broker
+      // error that disappears silently is exactly what gets diagnosed hours too late.
+      this.logger.error(`werken: subscription error: ${asMessage(error)}`);
       this.emit("error", error);
     });
 
@@ -197,8 +200,11 @@ export class WerkenPubSubTransport
     this.draining = true;
     const startedAt = Date.now();
 
-    // 1. Stop taking new work. Listeners come off first so nothing new is leased while draining.
-    this.subscription?.removeAllListeners();
+    // 1. Stop taking new work. Only the message listener comes off, so nothing new is leased while
+    //    draining. The error listener stays until the stream is actually closed: an EventEmitter
+    //    throws when it emits 'error' with nothing listening, which would turn a broker hiccup
+    //    mid-shutdown into a crash.
+    this.subscription?.removeAllListeners("message");
 
     // 2. Await in-flight handlers, bounded.
     const timeoutMs = this.options.shutdownDrainTimeoutMs ?? DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS;
@@ -227,6 +233,7 @@ export class WerkenPubSubTransport
       await this.subscription?.close();
       await this.client?.close();
     } finally {
+      this.subscription?.removeAllListeners();
       this.subscription = undefined;
       this.client = undefined;
       this._status$.next("disconnected");
@@ -305,12 +312,29 @@ export class WerkenPubSubTransport
 
   private async processTraced(message: IncomingMessage): Promise<void> {
     const outcome = await this.pipeline.handle(message);
+
+    // The drain nacks whatever is still running when it times out and then forgets it. A handler
+    // that finishes after that point must not settle its message a second time: the redelivery is
+    // already under way, so acking here would race it.
+    if (!this.inFlight.has(message)) {
+      this.logger.warn(`werken: dropping late ${outcome} for ${message.id} — the drain already nacked it`);
+      return;
+    }
+
     // 'dead-letter' means the copy is already safely on the dead-letter topic, so the original can
     // be acked. A failed dead-letter publish comes back as 'nack' instead.
-    if (outcome === "ack" || outcome === "dead-letter") {
-      message.ack();
-    } else {
-      message.nack();
+    const acking = outcome === "ack" || outcome === "dead-letter";
+    try {
+      if (acking) {
+        message.ack();
+      } else {
+        message.nack();
+      }
+    } catch (error) {
+      // Settling throws if the subscriber closed underneath us. Redelivery already covers the
+      // message, whereas an unhandled rejection out of the fire-and-forget message listener in
+      // listen() would take the whole process down.
+      this.logger.error(`werken: failed to ${acking ? "ack" : "nack"} ${message.id}: ${asMessage(error)}`);
     }
   }
 

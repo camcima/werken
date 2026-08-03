@@ -162,4 +162,32 @@ describe("lookup caching", () => {
 
     expect(r.stats.scans).toBe(1);
   });
+
+  // ce-type is producer-controlled. A subscription carrying a wide spread of types this consumer
+  // ignores — or a producer emitting unique ones — must not grow the miss cache without bound.
+  test("bounds the cache rather than growing once per distinct type", () => {
+    const r = new PatternRouter([["com.example.*", handler("wild")]] as Array<[string, () => void]>, {
+      maxCachedTypes: 8,
+    });
+
+    for (let i = 0; i < 500; i++) r.resolve(`org.other.thing.${i}`);
+
+    expect(r.stats.cached).toBeLessThanOrEqual(8);
+  });
+
+  test("still routes correctly once entries have been evicted", () => {
+    const r = new PatternRouter(
+      [
+        ["com.example.thing.v1", handler("exact")],
+        ["com.example.*", handler("wild")],
+      ] as Array<[string, () => void]>,
+      { maxCachedTypes: 2 },
+    );
+
+    for (let i = 0; i < 50; i++) r.resolve(`org.other.thing.${i}`);
+
+    expect(nameOf(r.resolve("com.example.thing.v1"))).toBe("exact");
+    expect(nameOf(r.resolve("com.example.something.else"))).toBe("wild");
+    expect(r.resolve("org.unmatched")).toBeNull();
+  });
 });

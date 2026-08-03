@@ -3,7 +3,7 @@ import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-ho
 import { W3CTraceContextPropagator } from "@opentelemetry/core";
 import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { createEventPublisher } from "@werken/nestjs-google-pubsub";
+import { PartialPublishError, createEventPublisher } from "@werken/nestjs-google-pubsub";
 import type { PubSubClientLike } from "@werken/nestjs-google-pubsub";
 
 const TYPE = "com.example.thing.happened.v1";
@@ -19,29 +19,34 @@ interface Published {
 
 function fakeClient() {
   const published: Published[] = [];
+  /** One entry per `client.topic()` call, so Topic reuse can be asserted. */
+  const topicCalls: string[] = [];
   let nextId = 0;
   const client = {
-    topic: vi.fn((topic: string, topicOptions?: unknown) => ({
-      publishMessage: vi.fn(async (m: { data: Buffer; attributes: Record<string, string>; orderingKey?: string }) => {
-        published.push({ topic, topicOptions, ...m });
-        return `msg-${++nextId}`;
-      }),
-    })),
+    topic: vi.fn((topic: string, topicOptions?: unknown) => {
+      topicCalls.push(topic);
+      return {
+        publishMessage: vi.fn(async (m: { data: Buffer; attributes: Record<string, string>; orderingKey?: string }) => {
+          published.push({ topic, topicOptions, ...m });
+          return `msg-${++nextId}`;
+        }),
+      };
+    }),
     subscription: vi.fn(),
     close: vi.fn(async () => {}),
   };
-  return { published, client: client as unknown as PubSubClientLike };
+  return { published, topicCalls, client: client as unknown as PubSubClientLike };
 }
 
 function publisherWith(overrides: Partial<Parameters<typeof createEventPublisher>[0]> = {}) {
-  const { published, client } = fakeClient();
+  const { published, topicCalls, client } = fakeClient();
   const publisher = createEventPublisher({
     source: SOURCE,
     client,
     topicResolver: (type: string) => type.replaceAll(".", "-"),
     ...overrides,
   });
-  return { publisher, published };
+  return { publisher, published, topicCalls };
 }
 
 const originalEnv = process.env.NODE_ENV;
@@ -223,6 +228,108 @@ describe("batch", () => {
     ]);
 
     expect(published[0].attributes["ce-id"]).not.toBe(published[1].attributes["ce-id"]);
+  });
+
+  test("issues every publish before awaiting any, so the SDK can batch them", async () => {
+    const calls: string[] = [];
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => (release = r));
+    const { publisher } = publisherWith({
+      client: {
+        topic: () => ({
+          publishMessage: async (m: { attributes: Record<string, string> }) => {
+            calls.push(m.attributes["ce-type"]);
+            await gate;
+            return "msg";
+          },
+        }),
+        subscription: vi.fn(),
+        close: vi.fn(async () => {}),
+      } as unknown as PubSubClientLike,
+    });
+
+    const batch = publisher.publishBatch([
+      { type: "com.example.a.v1", data: {} },
+      { type: "com.example.b.v1", data: {} },
+    ]);
+    await new Promise((r) => setImmediate(r));
+
+    // Awaiting each publish in turn would leave the second message unsent until the first resolved,
+    // so a batch could only ever hold one message. Call order is what preserves ordering-key order.
+    expect(calls).toEqual(["com.example.a.v1", "com.example.b.v1"]);
+
+    release!();
+    await batch;
+  });
+
+  // Pub/Sub has no multi-message transaction: a batch that fails part-way leaves the successful
+  // messages published and unsendable. A bare throw tells the caller nothing about which, so
+  // retrying the batch would duplicate them.
+  test("reports what was published and what failed when one request fails", async () => {
+    let call = 0;
+    const { publisher } = publisherWith({
+      client: {
+        topic: () => ({
+          publishMessage: async () => {
+            call++;
+            if (call === 2) throw new Error("topic not found");
+            return `msg-${call}`;
+          },
+        }),
+        subscription: vi.fn(),
+        close: vi.fn(async () => {}),
+      } as unknown as PubSubClientLike,
+    });
+
+    const error = await publisher
+      .publishBatch([
+        { type: "com.example.a.v1", data: {} },
+        { type: "com.example.b.v1", data: {} },
+        { type: "com.example.c.v1", data: {} },
+      ])
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(PartialPublishError);
+    const partial = error as PartialPublishError;
+    expect(partial.published.map((p) => p.index)).toEqual([0, 2]);
+    expect(partial.failures.map((f) => f.index)).toEqual([1]);
+    expect(partial.failures[0].type).toBe("com.example.b.v1");
+    expect((partial.failures[0].cause as Error).message).toBe("topic not found");
+  });
+
+  test("still returns plain ids when every request succeeds", async () => {
+    const { publisher } = publisherWith();
+
+    await expect(
+      publisher.publishBatch([
+        { type: TYPE, data: {} },
+        { type: TYPE, data: {} },
+      ]),
+    ).resolves.toEqual(["msg-1", "msg-2"]);
+  });
+});
+
+describe("topic reuse", () => {
+  // Every client.topic() call returns a Topic with its own publisher and batch queue, so building
+  // one per message means the SDK never actually batches and each publish pays full overhead.
+  test("builds one Topic per destination and reuses it", async () => {
+    const { publisher, topicCalls } = publisherWith();
+
+    await publisher.publish({ type: TYPE, data: {} });
+    await publisher.publish({ type: TYPE, data: {} });
+    await publisher.publish({ type: TYPE, data: {} });
+
+    expect(topicCalls).toEqual(["com-example-thing-happened-v1"]);
+  });
+
+  test("keeps a separate Topic per distinct destination", async () => {
+    const { publisher, topicCalls } = publisherWith();
+
+    await publisher.publish({ type: TYPE, data: {} });
+    await publisher.publish({ type: "com.example.other.v1", data: {} });
+    await publisher.publish({ type: TYPE, data: {} });
+
+    expect(topicCalls).toEqual(["com-example-thing-happened-v1", "com-example-other-v1"]);
   });
 });
 

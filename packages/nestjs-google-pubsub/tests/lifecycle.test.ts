@@ -271,6 +271,65 @@ describe("drain on shutdown", () => {
     await expect(transport.close()).resolves.toBeUndefined();
   });
 
+  test("does not settle a message the drain already nacked", async () => {
+    const { subscription, client } = fakeClient();
+    const transport = new WerkenPubSubTransport({
+      projectId: "p",
+      subscription: "s",
+      shutdownDrainTimeoutMs: 20,
+      createClient: () => client as never,
+    });
+
+    let release: (() => void) | undefined;
+    transport.addHandler(
+      TYPE,
+      (async () => {
+        await new Promise<void>((r) => (release = r));
+      }) as never,
+      true,
+    );
+    await listenReady(transport);
+
+    const message = incoming();
+    subscription.emit("message", message);
+    await settle();
+
+    await transport.close();
+    expect(message.nack).toHaveBeenCalledTimes(1);
+
+    // The handler finishes after the drain gave up on it. The message was already nacked and is on
+    // its way back, so acking now would race the redelivery — and settling a message twice on a
+    // closed subscription throws, which out of a fire-and-forget listener kills the process.
+    release!();
+    await settle();
+
+    expect(message.ack).not.toHaveBeenCalled();
+    expect(message.nack).toHaveBeenCalledTimes(1);
+  });
+
+  test("logs rather than crashing when settling a message throws", async () => {
+    const { subscription, client } = fakeClient();
+    const transport = new WerkenPubSubTransport({
+      projectId: "p",
+      subscription: "s",
+      createClient: () => client as never,
+    });
+    const errors: string[] = [];
+    vi.spyOn(transport["logger"], "error").mockImplementation((m: unknown) => void errors.push(String(m)));
+
+    transport.addHandler(TYPE, (() => {}) as never, true);
+    await listenReady(transport);
+
+    const message = incoming();
+    message.ack = vi.fn(() => {
+      throw new Error("subscriber already closed");
+    });
+    subscription.emit("message", message);
+    await settle();
+
+    expect(errors.join("\n")).toMatch(/ack/i);
+  });
+
   test("reports unhealthy once closed", async () => {
     const { client } = fakeClient();
     const transport = new WerkenPubSubTransport({
@@ -284,5 +343,51 @@ describe("drain on shutdown", () => {
 
     await transport.close();
     expect(transport.isHealthy()).toBe(false);
+  });
+});
+
+describe("stream errors", () => {
+  test("keeps its error listener attached until the subscription is closed", async () => {
+    const { subscription, client } = fakeClient();
+    const transport = new WerkenPubSubTransport({
+      projectId: "p",
+      subscription: "s",
+      createClient: () => client as never,
+    });
+    const seen: unknown[] = [];
+    transport.on("error", (error) => void seen.push(error));
+
+    await listenReady(transport);
+
+    let releaseClose: (() => void) | undefined;
+    subscription.close = vi.fn(() => new Promise<void>((r) => (releaseClose = r)));
+
+    const closing = transport.close();
+    await settle();
+
+    // An EventEmitter throws when it emits 'error' with nothing listening, so dropping the listener
+    // before the stream is closed turns a broker hiccup during shutdown into a crash.
+    expect(() => subscription.emit("error", new Error("stream broke"))).not.toThrow();
+
+    releaseClose!();
+    await closing;
+
+    expect(seen).toHaveLength(1);
+  });
+
+  test("logs subscription errors even when nothing registered a listener", async () => {
+    const { subscription, client } = fakeClient();
+    const transport = new WerkenPubSubTransport({
+      projectId: "p",
+      subscription: "s",
+      createClient: () => client as never,
+    });
+    const errors: string[] = [];
+    vi.spyOn(transport["logger"], "error").mockImplementation((m: unknown) => void errors.push(String(m)));
+
+    await listenReady(transport);
+    subscription.emit("error", new Error("stream broke"));
+
+    expect(errors.join("\n")).toMatch(/stream broke/);
   });
 });

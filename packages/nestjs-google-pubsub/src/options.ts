@@ -13,7 +13,8 @@ export interface SubscriptionLike {
   // EventEmitter, so the transport can be driven in-memory by the test harness.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- must match EventEmitter's own `on`, which uses any[]
   on(event: string, listener: (...args: any[]) => void): unknown;
-  removeAllListeners(): unknown;
+  /** Called with "message" to stop taking work while the error listener stays attached. */
+  removeAllListeners(event?: string): unknown;
   close(): Promise<void> | void;
 }
 

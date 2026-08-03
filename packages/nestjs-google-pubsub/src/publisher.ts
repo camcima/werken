@@ -1,7 +1,7 @@
 import { uuidv7 } from "uuidv7";
 import { toPubSubAttributes } from "@werken/cloudevents";
 import { optionalRequire } from "./optional-require.cjs";
-import type { PubSubClientLike } from "./options.js";
+import type { PubSubClientLike, TopicLike } from "./options.js";
 import { applyResourcePrefix, assertResourcePrefixSafe } from "./resource-name.js";
 
 export interface PublishRequest<T> {
@@ -25,7 +25,47 @@ export interface PublishOptions {
 
 export interface EventPublisher {
   publish<T>(request: PublishRequest<T>, options?: PublishOptions): Promise<string>;
+  /**
+   * Publishes every request, in order. Throws {@link PartialPublishError} if any failed — the
+   * successes are already on the topic by then, so the error names them rather than leaving the
+   * caller to guess.
+   */
   publishBatch<T>(requests: Array<PublishRequest<T>>, options?: PublishOptions): Promise<string[]>;
+}
+
+/** A request that made it, identified by its position in the batch. */
+export interface PublishSuccess {
+  readonly index: number;
+  readonly messageId: string;
+}
+
+/** A request that did not, identified by its position in the batch. */
+export interface PublishFailure {
+  readonly index: number;
+  readonly type: string;
+  readonly cause: unknown;
+}
+
+/**
+ * Raised when part of a batch published and part did not.
+ *
+ * Pub/Sub has no multi-message transaction, so a partly-failed batch leaves the successful messages
+ * published and impossible to unsend. A bare throw would tell the caller nothing about which ones,
+ * making the only safe recovery — retry just the failures — impossible: retrying the whole batch
+ * would duplicate everything that already went out.
+ */
+export class PartialPublishError extends Error {
+  constructor(
+    readonly published: readonly PublishSuccess[],
+    readonly failures: readonly PublishFailure[],
+  ) {
+    super(
+      `werken: ${failures.length} of ${published.length + failures.length} events failed to publish. ` +
+        `${published.length} were published and cannot be unsent — retry only the failures.`,
+      { cause: failures[0]?.cause },
+    );
+    this.name = "PartialPublishError";
+  }
 }
 
 export interface EventPublisherOptions {
@@ -59,6 +99,20 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
 
   const now = options.now ?? (() => new Date());
 
+  // One Topic per destination, kept for the publisher's lifetime. Each `client.topic()` call
+  // returns a Topic with its own publisher and batch queue, so building one per message means the
+  // SDK's batching never engages and every publish pays the full per-message overhead.
+  const topics = new Map<string, TopicLike>();
+  function topicFor(name: string): TopicLike {
+    let topic = topics.get(name);
+    if (topic === undefined) {
+      // The SDK ignores orderingKey unless the Topic itself was constructed with messageOrdering.
+      topic = options.client.topic(name, options.ordering === true ? { messageOrdering: true } : undefined);
+      topics.set(name, topic);
+    }
+    return topic;
+  }
+
   async function publishOne<T>(request: PublishRequest<T>, publishOptions?: PublishOptions): Promise<string> {
     const resolved = publishOptions?.topic ?? options.topicResolver(request.type);
     if (resolved === undefined || resolved === "") {
@@ -90,10 +144,7 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
 
     const data = options.encode?.(request.type, request.data) ?? Buffer.from(JSON.stringify(request.data));
 
-    // The SDK ignores orderingKey unless the Topic itself was constructed with messageOrdering.
-    const topic = options.client.topic(topicName, options.ordering === true ? { messageOrdering: true } : undefined);
-
-    const messageId = await topic.publishMessage({
+    const messageId = await topicFor(topicName).publishMessage({
       data,
       attributes,
       ...(orderingKey === undefined || orderingKey === "" ? {} : { orderingKey }),
@@ -104,11 +155,22 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
   return {
     publish: publishOne,
     async publishBatch(requests, publishOptions) {
-      const ids: string[] = [];
-      for (const request of requests) {
-        ids.push(await publishOne(request, publishOptions));
+      // Every publish is issued before any is awaited. Awaiting each in turn would flush a batch of
+      // one — the SDK batches what is queued together — while the calls still happen in request
+      // order, which is what preserves ordering per ordering key.
+      const settled = await Promise.allSettled(requests.map((request) => publishOne(request, publishOptions)));
+
+      const failures = settled.flatMap<PublishFailure>((result, index) =>
+        result.status === "rejected" ? [{ index, type: requests[index].type, cause: result.reason }] : [],
+      );
+      if (failures.length > 0) {
+        const published = settled.flatMap<PublishSuccess>((result, index) =>
+          result.status === "fulfilled" ? [{ index, messageId: result.value }] : [],
+        );
+        throw new PartialPublishError(published, failures);
       }
-      return ids;
+
+      return settled.map((result) => (result as PromiseFulfilledResult<string>).value);
     },
   };
 }
