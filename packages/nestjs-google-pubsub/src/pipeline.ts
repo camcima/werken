@@ -5,6 +5,8 @@ import type { DeadLetterPublisher, DeadLetterStage } from "./dead-letter.js";
 import { idempotencyKeyToString } from "./idempotency.js";
 import type { IdempotencyKey, IdempotencyStore } from "./idempotency.js";
 import { schemaMetaFromAttributes } from "./schema/attributes.js";
+import type { Telemetry } from "./telemetry.js";
+import { withEventFields } from "./logging.js";
 import type { AvroCodec } from "./schema/avro-codec.js";
 import type { CloudEventContext, IncomingMessage } from "./types.js";
 
@@ -42,6 +44,7 @@ export interface MessagePipelineOptions {
   /** Default 'ack' — a subscription legitimately carries types this consumer ignores. */
   readonly onUnhandledPattern?: RejectionPolicy;
   readonly now?: () => Date;
+  readonly telemetry?: Telemetry;
   readonly logger?: Pick<Console, "warn" | "error"> & Partial<Pick<Console, "debug">>;
 }
 
@@ -84,6 +87,7 @@ export class MessagePipeline {
 
   private async run(message: IncomingMessage): Promise<Outcome> {
     const now = this.options.now ?? (() => new Date());
+    const telemetry = this.options.telemetry;
 
     let envelope;
     try {
@@ -99,6 +103,11 @@ export class MessagePipeline {
         now,
       });
     }
+
+    telemetry?.recordReceived(envelope.type, this.options.subscription);
+    // Lateness is an operational signal in its own right, not just a debugging aid: for events that
+    // routinely arrive long after they happened, its distribution is the thing worth alerting on.
+    if (envelope.time !== undefined) telemetry?.recordLateness(envelope.type, envelope.time, now());
 
     const handler = this.options.resolveHandler(envelope.type);
     if (handler === null) {
@@ -120,14 +129,15 @@ export class MessagePipeline {
         // Before decode: a duplicate should not pay the decode cost, and a message already
         // processed must still be acked even if its schema has since become unreadable.
         if (await store.has(key, ctx)) {
-          this.options.logger?.debug?.(`werken: skipping duplicate ${envelope.type} (${envelope.id})`);
+          this.options.logger?.debug?.(withEventFields("werken: skipping duplicate", message));
+          telemetry?.recordOutcome(envelope.type, "skipped_duplicate");
           return "ack";
         }
       } catch (error) {
         // Treating an unreadable store as "not seen" would reprocess every message during an
         // outage. Redelivering is the safer failure.
         this.options.logger?.error(
-          `werken: idempotency check failed for ${envelope.id}: ${asMessage(error)} — nacking`,
+          withEventFields(`werken: idempotency check failed: ${asMessage(error)} — nacking`, message),
         );
         return "nack";
       }
@@ -135,11 +145,11 @@ export class MessagePipeline {
 
     let data: unknown;
     try {
-      data =
-        this.options.codec === undefined
-          ? plainJson(message)
-          : await this.options.codec.decode(message.data, schemaMetaFromAttributes(message.attributes));
+      data = await (telemetry === undefined
+        ? this.decode(message)
+        : telemetry.withChildSpan("werken.decode", () => this.decode(message)));
     } catch (error) {
+      telemetry?.recordDecodeFailure(envelope.type, decodeReason(error));
       return this.reject(message, {
         policy: this.options.validation?.onDecodeFailure ?? "dead-letter",
         stage: "decode",
@@ -148,8 +158,12 @@ export class MessagePipeline {
       });
     }
 
+    const startedAt = Date.now();
     try {
-      await settle(await handler(data, ctx));
+      await (telemetry === undefined
+        ? settle(await handler(data, ctx))
+        : telemetry.withChildSpan("werken.handler", async () => settle(await handler(data, ctx))));
+      telemetry?.recordHandlerDuration(envelope.type, Date.now() - startedAt);
       await this.record(key, ctx);
       return "ack";
     } catch (error) {
@@ -167,7 +181,8 @@ export class MessagePipeline {
         if (outcome === "dead-letter") await this.record(key, ctx);
         return outcome;
       }
-      this.options.logger?.error(`werken: handler failed for ${envelope.type} (${envelope.id}): ${asMessage(error)}`);
+      telemetry?.recordHandlerDuration(envelope.type, Date.now() - startedAt);
+      this.options.logger?.error(withEventFields(`werken: handler failed: ${asMessage(error)}`, message));
       return "nack";
     }
   }
@@ -177,6 +192,12 @@ export class MessagePipeline {
    * dropping a message that then failed; recording after the ack risks a crash in between. Neither
    * is eliminable — this is at-least-once — which is why handlers must still be idempotent.
    */
+  private async decode(message: IncomingMessage): Promise<unknown> {
+    return this.options.codec === undefined
+      ? plainJson(message)
+      : await this.options.codec.decode(message.data, schemaMetaFromAttributes(message.attributes));
+  }
+
   private async record(key: IdempotencyKey, ctx: CloudEventContext): Promise<void> {
     const store = this.options.idempotencyStore;
     if (store === undefined) return;
@@ -203,7 +224,7 @@ export class MessagePipeline {
 
     if (policy === "ack") return "ack";
     if (policy === "nack") {
-      this.options.logger?.warn(`werken: nacking message ${message.id} at ${stage}: ${reason}`);
+      this.options.logger?.warn(withEventFields(`werken: nacking at ${stage}: ${reason}`, message));
       return "nack";
     }
 
@@ -212,7 +233,10 @@ export class MessagePipeline {
       // Failing loudly beats silently dropping: without a dead-letter topic the only safe outcome
       // is redelivery.
       this.options.logger?.error(
-        `werken: message ${message.id} is terminal at ${stage} (${reason}) but no dead-letter topic is configured — nacking`,
+        withEventFields(
+          `werken: terminal at ${stage} (${reason}) but no dead-letter topic is configured — nacking`,
+          message,
+        ),
       );
       return "nack";
     }
@@ -229,10 +253,16 @@ export class MessagePipeline {
       return "dead-letter";
     } catch (error) {
       // Losing a message is worse than redelivering it.
-      this.options.logger?.error(`werken: dead-letter publish failed for ${message.id}: ${asMessage(error)} — nacking`);
+      this.options.logger?.error(
+        withEventFields(`werken: dead-letter publish failed: ${asMessage(error)} — nacking`, message),
+      );
       return "nack";
     }
   }
+}
+
+function decodeReason(error: unknown): string {
+  return error instanceof Error ? error.name : "unknown";
 }
 
 function plainJson(message: IncomingMessage): unknown {

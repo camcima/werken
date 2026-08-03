@@ -38,6 +38,16 @@ export { AvroCodec, SchemaDecodeError } from "./schema/avro-codec.js";
 export { SCHEMA_ATTRIBUTES, schemaMetaFromAttributes } from "./schema/attributes.js";
 export { ResourcePrefixError, applyResourcePrefix, assertResourcePrefixSafe } from "./resource-name.js";
 export type {
+  MessageSpanInput,
+  SchemaCacheResult,
+  Telemetry,
+  TelemetryEnvelope,
+  TelemetryOptions,
+} from "./telemetry.js";
+export { createTelemetry } from "./telemetry.js";
+export type { EventLogFields } from "./logging.js";
+export { eventLogFields, withEventFields } from "./logging.js";
+export type {
   IdempotencyKey,
   IdempotencyStore,
   InMemoryIdempotencyStoreOptions,

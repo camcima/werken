@@ -15,6 +15,8 @@ import {
 } from "./options.js";
 import type { IdempotencyStore } from "./idempotency.js";
 import { applyResourcePrefix, assertResourcePrefixSafe } from "./resource-name.js";
+import { createTelemetry } from "./telemetry.js";
+import type { Telemetry } from "./telemetry.js";
 import type { IncomingMessage } from "./types.js";
 
 export type WerkenTransportStatus = "connected" | "disconnected";
@@ -45,12 +47,17 @@ export class WerkenPubSubTransport
   private readonly listeners = new Map<keyof WerkenTransportEvents, Function[]>();
   private pipeline: MessagePipeline;
   private readonly idempotencyStore: IdempotencyStore;
+  private readonly telemetry: Telemetry;
 
   constructor(private readonly options: WerkenTransportOptions) {
     super();
     // Constructed eagerly so the "no idempotency store" warning fires at startup, not on the first
     // message — an operator should learn about it before traffic arrives.
     this.idempotencyStore = resolveIdempotencyStore(options, (m: string) => this.logger.warn(m));
+    this.telemetry = createTelemetry({
+      enabled: options.telemetry?.enabled,
+      serviceName: options.telemetry?.serviceName ?? "werken",
+    });
     // Built without a dead-letter publisher until listen() has a client to give it; terminal
     // messages nack rather than being dropped in the meantime.
     this.pipeline = this.buildPipeline(undefined);
@@ -88,6 +95,7 @@ export class WerkenPubSubTransport
       idempotencyStore: this.idempotencyStore,
       consumer: this.options.idempotency?.consumer,
       idempotencyTtlMs: this.options.idempotency?.ttlMs,
+      telemetry: this.telemetry,
       validation: this.options.validation,
       onUnhandledPattern: this.options.onUnhandledPattern,
       logger: { warn: (m) => this.logger.warn(m), error: (m) => this.logger.error(m) },
@@ -280,6 +288,15 @@ export class WerkenPubSubTransport
   }
 
   private async processMessage(message: IncomingMessage): Promise<void> {
+    this.telemetry.addInFlight(this.options.subscription, 1);
+    try {
+      await this.processTraced(message);
+    } finally {
+      this.telemetry.addInFlight(this.options.subscription, -1);
+    }
+  }
+
+  private async processTraced(message: IncomingMessage): Promise<void> {
     const outcome = await this.pipeline.handle(message);
     // 'dead-letter' means the copy is already safely on the dead-letter topic, so the original can
     // be acked. A failed dead-letter publish comes back as 'nack' instead.

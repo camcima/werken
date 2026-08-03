@@ -99,6 +99,20 @@ export interface WerkenTransportOptions {
   /** Permits `resourcePrefix` while NODE_ENV=production. Almost certainly a mistake. */
   allowUnsafeResourcePrefix?: boolean;
 
+  /**
+   * OpenTelemetry tracing and metrics. `@opentelemetry/api` is an optional peer dependency: if it
+   * is not installed, every call degrades to a no-op rather than crashing.
+   *
+   * Spans only propagate if a ContextManager is registered — the OTel Node SDK does this for you.
+   * Without one, `context.active()` always returns root and child spans come out unparented.
+   */
+  telemetry?: {
+    /** Default true. When false, no OpenTelemetry calls are made at all. */
+    enabled?: boolean;
+    /** Tracer and meter name. Defaults to "werken". */
+    serviceName?: string;
+  };
+
   /** Regional endpoint override. */
   apiEndpoint?: string;
 
