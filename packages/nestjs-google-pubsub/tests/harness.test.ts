@@ -54,7 +54,7 @@ describe("createWerkenTestHarness", () => {
 
     await harness.emit(TYPE, { hello: "world" }, { subject: "thing-42", deliveryAttempt: 3 });
 
-    const store = harness.get(ThingStore);
+    const store = harness.get<ThingStore>(ThingStore);
     expect(store.saved).toHaveLength(1);
     expect(store.saved[0].data).toEqual({ hello: "world" });
     expect(store.saved[0].ctx.type).toBe(TYPE);
@@ -89,7 +89,7 @@ describe("createWerkenTestHarness", () => {
     await harness.emit(TYPE, { hello: "world" });
 
     expect(fake.saved).toHaveLength(1);
-    expect(harness.get(ThingStore)).toBe(fake);
+    expect(harness.get<ThingStore>(ThingStore)).toBe(fake);
   });
 
   // The harness dedupes by ce-id via its default in-memory store, exactly as production would —
@@ -100,7 +100,7 @@ describe("createWerkenTestHarness", () => {
     await harness.emit(TYPE, { n: 1 });
     await harness.emit(TYPE, { n: 2 });
 
-    const store = harness.get(ThingStore);
+    const store = harness.get<ThingStore>(ThingStore);
     expect(store.saved).toHaveLength(2);
     expect(store.saved[0].ctx.id).not.toBe(store.saved[1].ctx.id);
   });
@@ -139,7 +139,7 @@ describe("emitRaw", () => {
     );
 
     expect(harness.acked).toHaveLength(1);
-    expect(harness.get(ThingStore).saved[0].data).toEqual({ hello: "raw" });
+    expect(harness.get<ThingStore>(ThingStore).saved[0].data).toEqual({ hello: "raw" });
   });
 
   // validation.onInvalidEnvelope defaults to 'dead-letter'. The original is acked only
@@ -186,7 +186,7 @@ describe("deterministic clock", () => {
 
     await harness.emit(TYPE, {});
 
-    expect(harness.get(ThingStore).saved[0].ctx.time).toEqual(now);
+    expect(harness.get<ThingStore>(ThingStore).saved[0].ctx.time).toEqual(now);
   });
 
   test("an explicit time on the emit wins over the clock", async () => {
@@ -197,6 +197,6 @@ describe("deterministic clock", () => {
 
     await harness.emit(TYPE, {}, { time: new Date("2026-08-01T09:30:00.000Z") });
 
-    expect(harness.get(ThingStore).saved[0].ctx.time).toEqual(new Date("2026-08-01T09:30:00.000Z"));
+    expect(harness.get<ThingStore>(ThingStore).saved[0].ctx.time).toEqual(new Date("2026-08-01T09:30:00.000Z"));
   });
 });

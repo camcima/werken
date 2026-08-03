@@ -1,0 +1,29 @@
+{
+  // Type-checks everything the build does not: test files, the example's tests, and the root-level
+  // tooling configs. `tsc --build` only ever sees each project's `src`, so without this the
+  // suites — the largest body of TypeScript in the repo — are never checked by anything.
+  //
+  // Not a project reference and not composite: it is a whole-workspace read-only pass.
+  //
+  // `@werken/*` is mapped to source rather than to dist, mirroring the aliases in vitest.shared.ts.
+  // The suites execute against source, so that is what they must be checked against — and it keeps
+  // this pass independent of whether dist happens to be built, which matters for the pre-push hook.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "incremental": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "noEmit": true,
+    "rootDir": ".",
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@werken/cloudevents": ["packages/cloudevents/src/index.ts"],
+      "@werken/nestjs-google-pubsub": ["packages/nestjs-google-pubsub/src/index.ts"],
+      "@werken/nestjs-google-pubsub/testing": ["packages/nestjs-google-pubsub/src/testing/index.ts"]
+    }
+  },
+  "include": ["packages/*/src", "packages/*/tests", "examples/*/src", "examples/*/tests", "*.ts"]
+}

@@ -75,9 +75,12 @@ describe("NoopIdempotencyStore", () => {
   test("always reports a key as new, so every message is processed", async () => {
     const store = new NoopIdempotencyStore({ warn: () => {} });
 
-    expect(await store.tryRecord(key(), 60_000)).toBe(true);
-    expect(await store.tryRecord(key(), 60_000)).toBe(true);
-    expect(await store.has(key())).toBe(false);
+    // Called with no arguments because that is what the class declares: it ignores key, TTL and
+    // context by construction, and satisfies IdempotencyStore structurally. The port's full
+    // signature is exercised against real stores in pipeline-idempotency.test.ts.
+    expect(await store.tryRecord()).toBe(true);
+    expect(await store.tryRecord()).toBe(true);
+    expect(await store.has()).toBe(false);
   });
 });
 

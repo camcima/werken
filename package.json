@@ -11,7 +11,7 @@
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "test:integration": "PUBSUB_EMULATOR_HOST=localhost:8085 PUBSUB_PROJECT_ID=werken-dev DATABASE_URL=postgresql://postgres:postgres@localhost:55432/werken_test WERKEN_REQUIRE_INTEGRATION=1 vitest run --config vitest.integration.config.ts",
-    "typecheck": "vitest --typecheck.enabled --run",
+    "typecheck": "tsc -p tsconfig.typecheck.json",
     "lint": "eslint .",
     "lint:no-deep-imports": "sh scripts/check-no-deep-imports.sh",
     "lint:neutrality": "sh scripts/check-neutrality.sh",
