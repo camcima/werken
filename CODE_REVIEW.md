@@ -44,10 +44,20 @@ untested paths for the `strict: false` fallback, both schema-fetch error branche
 nack-throws-during-drain path, the codec's plain-JSON handling, `tracestate` propagation, and the
 `idempotency.executor` wiring.
 
-What remains uncovered is deliberate and falls into three groups: paths exercised only by the
-integration suite (`createDefaultClient`, `pruneExpiredSql`), no-op stubs and the
-`@opentelemetry/api`-absent branches, and two defensive `if (iterator.done) break` guards in LRU
-eviction that cannot be reached because the loop only runs when the map is over capacity.
+`AvroCodec#cacheStats` was removed rather than kept: once the cache reports each lookup through
+`onResult`, a cumulative getter nothing reads is redundant surface. `SchemaRevisionCache#stats`
+remains, since that is where the counters live.
+
+CI now uploads coverage from **both** suites — the `unit` flag from the `ci` job and the
+`integration` flag from the job running against the emulator and a real Postgres — so the project
+total is their union. Previously only the unit half was uploaded, which meant code reachable only
+against a real broker or database counted as uncovered, and the reported number could not
+distinguish "tested in the integration job" from "tested nowhere". `codecov.notify.after_n_builds`
+holds the status until both uploads land, so it is never graded on the unit half alone.
+
+What remains uncovered is deliberate: no-op stubs, the `@opentelemetry/api`-absent branches, and two
+defensive `if (iterator.done) break` guards in LRU eviction that cannot be reached because the loop
+only runs when the map is over capacity.
 
 One line is worth calling out as genuinely unreachable rather than merely untested:
 `transport.ts`'s `if (this.draining) return` in `handleMessage`. `close()` removes the message

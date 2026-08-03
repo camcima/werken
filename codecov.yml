@@ -1,3 +1,10 @@
+# The project total is the union of two uploads: the `unit` flag from the ci job and the
+# `integration` flag from the job that runs against the emulator and a real Postgres. Hold the
+# status until both have landed, or it is graded on the unit half alone and reads as a drop.
+codecov:
+  notify:
+    after_n_builds: 2
+
 coverage:
   status:
     project:

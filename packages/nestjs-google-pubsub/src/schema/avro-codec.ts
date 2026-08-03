@@ -1,6 +1,5 @@
 import avro from "avsc";
 import { SchemaRevisionCache } from "./cache.js";
-import type { SchemaCacheStats } from "./cache.js";
 
 /** Schema metadata Pub/Sub attaches to a message. See `SCHEMA_ATTRIBUTES` for the wire names. */
 export interface SchemaMessageMeta {
@@ -59,10 +58,6 @@ export class AvroCodec {
     });
   }
 
-  get cacheStats(): SchemaCacheStats {
-    return this.cache.stats;
-  }
-
   async decode(body: Buffer, meta: SchemaMessageMeta): Promise<unknown> {
     // No schema attached to the topic is a distinct case from an unknown revision: the first means
     // an unschematised topic, the second a producer running ahead of this consumer.
@@ -77,10 +72,9 @@ export class AvroCodec {
     } catch (error) {
       if (this.strict) {
         // Decoding against the reader schema alone would silently mis-read any field the writer
-        // changed. Fail loudly instead.
-        // The cause is folded into the message because this is what an operator sees: "could not
-        // resolve" alone does not distinguish a client without schema support from a schema with no
-        // definition from a Schema Service outage, and those need different responses.
+        // changed. Fail loudly instead — and name the cause, since "could not resolve" alone does
+        // not distinguish a client without schema support from a schema with no definition from a
+        // Schema Service outage, and those need different responses.
         throw new SchemaDecodeError(`could not resolve writer schema ${key}: ${asMessage(error)}`, error);
       }
       this.options.logger?.warn(`werken: falling back to plain JSON for ${key}: ${asMessage(error)}`);

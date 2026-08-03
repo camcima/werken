@@ -90,13 +90,24 @@ jobs:
       # integration suite needs dist/ present. That path is also the most Node-version-sensitive
       # thing here, which is why integration is matrixed too rather than pinned to one major.
       - run: pnpm run build
-      - run: pnpm vitest run packages/*/tests/integration
+      - run: pnpm vitest run --coverage packages/*/tests/integration
         env:
           PUBSUB_EMULATOR_HOST: localhost:8085
           PUBSUB_PROJECT_ID: werken-ci
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/werken_test
+      # Uploaded under its own flag so the project total is the union of both suites. Without this
+      # half, code reachable only against a real broker or database — the default client, the SQL
+      # store — counts as uncovered, and the reported number cannot distinguish "tested in the
+      # integration job" from "tested nowhere". One leg only, as above.
+      - uses: codecov/codecov-action@v7
+        if: matrix.node-version == env.PRIMARY_NODE_VERSION
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage/coverage-final.json
+          flags: integration
+          fail_ci_if_error: true
 
-  # §2.3 — Nest 12 readiness. Non-blocking by design: it warns us before Nest 12 lands, without
+  # Nest 12 readiness. Non-blocking by design: it warns us before Nest 12 lands, without
   # gating merges on an upstream prerelease. One Node version is enough for a compatibility canary.
   nest-next:
     runs-on: ubuntu-latest

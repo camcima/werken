@@ -240,19 +240,3 @@ describe("unschematised bodies", () => {
     await expect(codecWith().decode(Buffer.from("{not json"), {})).rejects.toThrow(SchemaDecodeError);
   });
 });
-
-// A cumulative view for callers using AvroCodec directly; the transport reports per-lookup results
-// through onCacheResult instead, since a counter sampled later cannot attribute individual lookups.
-describe("cacheStats", () => {
-  test("reports cumulative hits and misses", async () => {
-    const codec = codecWith();
-    const body = avro.Type.forSchema(WRITER_V1 as avro.Schema).toBuffer({ id: "e1", station: null });
-
-    expect(codec.cacheStats).toEqual({ hits: 0, misses: 0 });
-
-    await codec.decode(body, meta("BINARY"));
-    await codec.decode(body, meta("BINARY"));
-
-    expect(codec.cacheStats).toEqual({ hits: 1, misses: 1 });
-  });
-});
