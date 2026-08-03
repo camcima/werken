@@ -7,9 +7,13 @@
     "requireUpstream": false,
     "requireCleanWorkingDir": true
   },
-  "github": { "release": false },
-  "npm": { "publish": false },
+  "github": {
+    "release": false
+  },
+  "npm": {
+    "publish": false
+  },
   "hooks": {
-    "after:release": "pnpm -r publish --no-git-checks"
+    "after:release": "sh scripts/publish.sh"
   }
 }

@@ -24,9 +24,8 @@ The internal dependency needs no re-pinning. `@werken/nestjs-google-pubsub` depe
 
 ## Prerequisites
 
-- **The `werken` npm organisation exists and you can publish to it.** Both names are currently
-  unclaimed, so the scope has to be created before the first release — a scope is not created
-  implicitly by publishing.
+- **You can publish to the `werken` scope** — `npm org ls werken` should list you. A scope is not
+  created implicitly by publishing, so the organisation has to exist first.
 - You are logged in: `npm whoami` prints your username. If it prints `E401`, run `npm login`.
 - The GitHub CLI is authenticated (`gh auth status`).
 - `main` is green and you are up to date: `git checkout main && git pull`.
@@ -46,9 +45,9 @@ Versions follow [SemVer](https://semver.org/), derived from the
 | `feat:`                              | **minor** |
 | any `!` or `BREAKING CHANGE:` footer | **major** |
 
-Both packages are still at `0.0.0` and nothing has been published, so the first release is a
-judgement call rather than a computed bump: `0.1.0` signals that the API may still move, `1.0.0`
-commits to SemVer guarantees from day one. Pass it explicitly either way.
+release-it computes the recommended bump from the last git tag, so pass the version explicitly
+whenever the history and the registry might disagree — and always for the first release of a line,
+where there is nothing to compute from.
 
 > **Merge content PRs with a merge commit or rebase, not squash.** Squashing collapses the
 > individual `feat:`/`fix:`/`!` commits into one, so conventional-changelog can no longer detect the
@@ -85,7 +84,7 @@ pnpm run build && pnpm test          # dist/ must exist — `files` ships only d
 
 # Tag v$VERSION locally and publish both packages with your local npm credentials.
 # --no-increment means "don't bump" — the version is already committed from Phase 1.
-pnpm exec release-it --no-increment --ci --config .release-it.publish.json
+NPM_OTP=123456 pnpm exec release-it --no-increment --ci --config .release-it.publish.json
 
 # Push the tag to record the release. No workflow runs on the tag.
 git push origin v$VERSION
@@ -108,6 +107,11 @@ for p in cloudevents nestjs-google-pubsub; do printf "@werken/%s: " "$p"; npm vi
 - **Don't run `pnpm run release -- … --ci`.** pnpm forwards the literal `--`, which yargs treats as
   "end of options", so `--ci` is parsed as a positional and release-it stays **interactive** (then
   hangs in a non-TTY shell). Use `pnpm exec release-it <version> --ci`.
+- **npm will ask for a one-time password, and `--ci` cannot prompt for it.** A package being
+  created for the first time always triggers the challenge, and accounts set to "auth and writes"
+  get it on every publish. release-it runs its hooks non-interactively, so pnpm fails with
+  `ERR_PNPM_OTP_NON_INTERACTIVE` **after the tag has already been created**. Pass the code through
+  `NPM_OTP`, and generate it immediately before running — codes expire in about 30 seconds.
 - **Publishing is irreversible.** npm does not allow re-publishing a version+name, and unpublishing
   public packages is heavily restricted. If a Phase 2 publish fails partway, re-running is safe:
   `pnpm -r publish` **skips versions already on the registry** and publishes only the missing ones.
