@@ -16,3 +16,26 @@
 # id = "GHSA-xxxx-xxxx-xxxx"
 # ignoreUntil = 2026-12-31
 # reason = "dev-only transitive (vite -> ...); not reachable from published packages"
+
+# GHSA-8988-4f7v-96qf (CVE-2026-54285) — @opentelemetry/core < 2.8.0. The W3C Baggage propagator
+# applies no size ceiling when EXTRACTING a `baggage` header, so an oversized one allocates memory
+# proportional to its size (CWE-770; availability only; CVSS 5.3).
+#
+# Suppressed deliberately, and this is neither dev-only nor a dependency we ship:
+#
+#  1. There is no fix to take. @google-cloud/pubsub 5.3.1 is the latest release and depends on
+#     `@opentelemetry/core: ^1.30.1`. 1.30.1 is the highest 1.x, and the fix landed only in 2.8.0.
+#  2. It is not ours to ship. It arrives through @google-cloud/pubsub, a peerDependency, so it sits
+#     in the consumer's tree where their own audit surfaces it. A pnpm override would turn this job
+#     green without changing a single consumer install — security theatre, and it would also force
+#     a major on the SDK against its declared range.
+#  3. The vulnerable path is unreachable from this library. Werken never propagates baggage: the
+#     only carrier handed to `propagation.extract` holds `traceparent` and `tracestate`, read from
+#     Pub/Sub attributes. The advisory's messaging-transport caveat is about code that extracts
+#     baggage over a non-HTTP transport, which this does not do.
+#
+# Revisit when @google-cloud/pubsub moves to @opentelemetry/core 2.x.
+[[IgnoredVulns]]
+id = "GHSA-8988-4f7v-96qf"
+ignoreUntil = 2026-11-30
+reason = "No upstream fix available: @google-cloud/pubsub 5.3.1 (latest) pins @opentelemetry/core ^1.30.1, patched only in 2.8.0. Reaches this repo through a peerDependency, and werken never extracts baggage, so the vulnerable propagator path is unreachable here."

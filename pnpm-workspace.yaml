@@ -6,10 +6,20 @@ packages:
 # See https://pnpm.io/settings
 linkWorkspacePackages: true
 
-# lefthook's postinstall is what installs the git hooks. Without this it is skipped silently and
-# the quality gates stop running locally.
-onlyBuiltDependencies:
-  - lefthook
+# Dependencies permitted to run install scripts. pnpm 11 fails the install outright when a package
+# with a build script is neither allowed nor explicitly refused, so every one has to be named here.
+#
+# This replaces the legacy `onlyBuiltDependencies` list, which pnpm 11 parses but no longer honours
+# for build approval — lefthook was listed there and was still reported as ignored, which failed
+# `pnpm install --frozen-lockfile` in CI on every job.
+#
+#  - lefthook: its postinstall fetches the platform binary. Without it the git hooks silently stop
+#    running, taking the local quality gates with them.
+#  - protobufjs: transitive, via @google-cloud/pubsub. Allowed rather than refused because it is
+#    part of the SDK's own wire encoding; set it to false to block the script if that is preferred.
+allowBuilds:
+  lefthook: true
+  protobufjs: true
 
 overrides:
   brace-expansion: ^5.0.6
