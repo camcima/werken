@@ -15,6 +15,7 @@ import {
 } from "./options.js";
 import type { IdempotencyStore } from "./idempotency.js";
 import { applyResourcePrefix, assertResourcePrefixSafe } from "./resource-name.js";
+import { PatternRouter } from "./pattern-router.js";
 import { createTelemetry } from "./telemetry.js";
 import type { Telemetry } from "./telemetry.js";
 import type { IncomingMessage } from "./types.js";
@@ -48,6 +49,8 @@ export class WerkenPubSubTransport
   private pipeline: MessagePipeline;
   private readonly idempotencyStore: IdempotencyStore;
   private readonly telemetry: Telemetry;
+  /** Built once at listen(); §4.5 forbids re-scanning patterns on every message. */
+  private router?: PatternRouter;
 
   constructor(private readonly options: WerkenTransportOptions) {
     super();
@@ -89,7 +92,7 @@ export class WerkenPubSubTransport
   private buildPipeline(deadLetterPublisher: DeadLetterPublisher | undefined, codec?: AvroCodec): MessagePipeline {
     return new MessagePipeline({
       subscription: this.options.subscription,
-      resolveHandler: (pattern) => this.getHandlerByPattern(pattern) as EventHandler | null,
+      resolveHandler: (type) => this.router?.resolve(type) ?? null,
       deadLetterPublisher,
       codec,
       idempotencyStore: this.idempotencyStore,
@@ -131,6 +134,10 @@ export class WerkenPubSubTransport
           ". This is a development-only affordance; unset it in production.",
       );
     }
+
+    // Built before anything connects, so an ambiguous or unsupported pattern fails startup rather
+    // than leaving a handler that silently never runs.
+    this.router = new PatternRouter(this.getHandlers() as unknown as Iterable<[string, EventHandler]>);
 
     this.client = this.options.createClient?.(this.options) ?? this.createDefaultClient();
 

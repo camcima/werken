@@ -1,0 +1,21 @@
+{
+  "name": "@werken/example-minimal-consumer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Worked example: a Werken consumer whose handler contains business logic only.",
+  "scripts": {
+    "build": "tsc --build",
+    "start": "node dist/main.worker.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/core": "^11.0.0",
+    "@nestjs/microservices": "^11.0.0",
+    "@google-cloud/pubsub": "^5.0.0",
+    "@werken/nestjs-google-pubsub": "workspace:*",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  }
+}

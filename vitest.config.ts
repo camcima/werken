@@ -28,7 +28,7 @@ export default defineConfig({
   },
   test: {
     globals: true,
-    include: ["packages/*/tests/**/*.test.ts"],
+    include: ["packages/*/tests/**/*.test.ts", "examples/*/tests/**/*.test.ts"],
     coverage: {
       provider: "v8",
       include: ["packages/*/src/**/*.ts"],

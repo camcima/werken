@@ -48,6 +48,7 @@ export type { EventLogFields } from "./logging.js";
 export { eventLogFields, withEventFields } from "./logging.js";
 export type { EventPublisher, EventPublisherOptions, PublishOptions, PublishRequest } from "./publisher.js";
 export { createEventPublisher } from "./publisher.js";
+export { AmbiguousPatternError, InvalidPatternError, PatternRouter } from "./pattern-router.js";
 export type {
   IdempotencyKey,
   IdempotencyStore,

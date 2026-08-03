@@ -303,6 +303,28 @@ _delivery_, not about _processing_. Werken narrows the duplicate window; your ha
 
 ---
 
+## Routing
+
+`@EventPattern` matches on the CloudEvents `ce-type`, in three shapes:
+
+| Pattern                       | Matches                                                                                      |
+| ----------------------------- | -------------------------------------------------------------------------------------------- |
+| `com.example.order.placed.v1` | exactly that type                                                                            |
+| `com.example.*`               | one or more trailing segments — `com.example.a` and `com.example.a.b`, but not `com.example` |
+| `*`                           | anything                                                                                     |
+
+**Exactly one handler runs per message.** Exact beats wildcard; among wildcards the longest literal
+prefix wins; the catch-all is last. Precedence does not depend on registration order.
+
+Two failures are deliberately made loud at startup rather than left to production:
+
+- **Two handlers for one pattern.** Nest chains duplicate event handlers, so the second would
+  register successfully and then never run. Werken refuses to start instead.
+- **A wildcard anywhere but the final segment.** `com.*.thing` is rejected, because a pattern that
+  silently never matches is much harder to notice than a boot error.
+
+---
+
 ## Sharing a development project
 
 Pub/Sub delivers each message to **exactly one** subscriber of a subscription. When several
@@ -356,6 +378,14 @@ gcloud pubsub subscriptions create "$PREFIX-orders-consumer" \
 
 Note the subscription attaches to the **shared** `orders` topic, which is what lets every developer
 receive their own copy of the same published events.
+
+---
+
+## Guides
+
+- [Migrating an existing consumer](docs/migration.md)
+- [A worked example](examples/minimal-consumer) — a consumer whose handler is 12 lines, with tests
+  that need no broker, credentials or emulator
 
 ---
 
