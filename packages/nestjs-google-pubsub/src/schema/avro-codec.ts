@@ -33,6 +33,8 @@ export interface AvroCodecOptions {
   cacheTtlMs?: number;
   now?: () => number;
   logger?: Pick<Console, "debug" | "warn">;
+  /** Called once per schema lookup, so the cache hit rate can be reported as a metric. */
+  onCacheResult?: (result: "hit" | "miss") => void;
 }
 
 /** The writer and reader types plus the resolver that reads writer bytes into the reader's shape. */
@@ -53,6 +55,7 @@ export class AvroCodec {
       maxEntries: options.maxCachedRevisions,
       ttlMs: options.cacheTtlMs,
       now: options.now,
+      onResult: options.onCacheResult,
     });
   }
 
@@ -75,7 +78,10 @@ export class AvroCodec {
       if (this.strict) {
         // Decoding against the reader schema alone would silently mis-read any field the writer
         // changed. Fail loudly instead.
-        throw new SchemaDecodeError(`could not resolve writer schema ${key}`, error);
+        // The cause is folded into the message because this is what an operator sees: "could not
+        // resolve" alone does not distinguish a client without schema support from a schema with no
+        // definition from a Schema Service outage, and those need different responses.
+        throw new SchemaDecodeError(`could not resolve writer schema ${key}: ${asMessage(error)}`, error);
       }
       this.options.logger?.warn(`werken: falling back to plain JSON for ${key}: ${asMessage(error)}`);
       return parsePlainJson(body);

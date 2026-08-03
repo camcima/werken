@@ -20,7 +20,7 @@ describe("applyResourcePrefix", () => {
   });
 
   test("prefixes only the last segment of a fully-qualified path", () => {
-    // §4.1 allows either form, so scoping must not mangle the project path.
+    // Both a short name and a fully-qualified path are valid, so scoping must not mangle the project path.
     expect(applyResourcePrefix("projects/p/subscriptions/orders", "alice")).toBe(
       "projects/p/subscriptions/alice-orders",
     );

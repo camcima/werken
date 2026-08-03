@@ -91,7 +91,7 @@ describe("routing through the transport", () => {
     expect(calls).toEqual(["all"]);
   });
 
-  // §4.5: exactly one handler runs per message.
+  // Exactly one handler runs per message.
   test("runs exactly one handler even when several patterns match", async () => {
     const { calls } = await deliver(
       { "com.example.thing.v1": "exact", "com.example.*": "wild", "*": "all" },

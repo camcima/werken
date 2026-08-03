@@ -6,6 +6,14 @@ export interface SchemaRevisionCacheOptions<T> {
   /** Entry lifetime, so schema corrections get picked up. Default 1 hour. */
   ttlMs?: number;
   now?: () => number;
+  /**
+   * Called once per lookup with whether it was served from cache.
+   *
+   * Reported from here rather than read back off `stats` afterwards because only this method knows
+   * whether a given lookup cost a Schema Service call; a counter sampled later cannot attribute
+   * individual lookups.
+   */
+  onResult?: (result: "hit" | "miss") => void;
 }
 
 export interface SchemaCacheStats {
@@ -54,6 +62,7 @@ export class SchemaRevisionCache<T> {
       this.entries.delete(key);
       this.entries.set(key, entry);
       this.hits++;
+      this.options.onResult?.("hit");
       return entry.value;
     }
     if (entry !== undefined) this.entries.delete(key);
@@ -63,10 +72,12 @@ export class SchemaRevisionCache<T> {
     const existing = this.inFlight.get(key);
     if (existing !== undefined) {
       this.hits++;
+      this.options.onResult?.("hit");
       return existing;
     }
 
     this.misses++;
+    this.options.onResult?.("miss");
     const pending = this.options
       .fetch(key)
       .then((value) => {

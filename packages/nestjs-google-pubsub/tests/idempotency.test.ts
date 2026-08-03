@@ -31,7 +31,7 @@ describe("InMemoryIdempotencyStore", () => {
     expect(await store.has(key())).toBe(true);
   });
 
-  // §5.4: two services consuming the same event must each process it once, not once between them.
+  // Two services consuming the same event must each process it once, not once between them.
   test("scopes keys per consumer", async () => {
     const store = new InMemoryIdempotencyStore();
     await store.tryRecord(key({ consumer: "service-a" }), 60_000);
@@ -62,7 +62,7 @@ describe("InMemoryIdempotencyStore", () => {
 });
 
 describe("NoopIdempotencyStore", () => {
-  // §5.4: the default must not silently no-op — an operator who forgets to configure a store
+  // The default must not silently no-op — an operator who forgets to configure a store
   // should find out at startup, not from duplicate side effects in production.
   test("warns once at construction that de-duplication is off", () => {
     const warn = vi.fn();

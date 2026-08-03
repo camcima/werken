@@ -15,7 +15,7 @@ describe("caching", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  // §5.3: producers move between revisions independently, so the revision id is the only safe key.
+  // Producers move between revisions independently, so the revision id is the only safe key.
   test("keys by revision, so two revisions of one schema do not collide", async () => {
     const fetch = vi.fn(async (key: string) => `compiled:${key}`);
     const cache = new SchemaRevisionCache<string>({ fetch });
@@ -113,5 +113,52 @@ describe("observability", () => {
     await cache.get(REV_B);
 
     expect(cache.stats).toEqual({ hits: 1, misses: 2 });
+  });
+});
+
+// The schema cache is the only place that knows whether a lookup cost a Schema Service call, so it
+// is the only place that can report one. Polling a counter afterwards cannot attribute individual
+// lookups, which is what the werken.schema.cache metric is for.
+describe("result reporting", () => {
+  test("reports a miss for the first lookup and a hit for the next", async () => {
+    const results: string[] = [];
+    const cache = new SchemaRevisionCache<string>({
+      fetch: async (key: string) => `compiled:${key}`,
+      onResult: (result) => results.push(result),
+    });
+
+    await cache.get(REV_A);
+    await cache.get(REV_A);
+
+    expect(results).toEqual(["miss", "hit"]);
+  });
+
+  test("reports one miss when concurrent lookups share a single fetch", async () => {
+    const results: string[] = [];
+    const cache = new SchemaRevisionCache<string>({
+      fetch: async (key: string) => `compiled:${key}`,
+      onResult: (result) => results.push(result),
+    });
+
+    await Promise.all([cache.get(REV_A), cache.get(REV_A)]);
+
+    expect(results).toEqual(["miss", "hit"]);
+  });
+
+  test("reports a miss again once an entry has expired", async () => {
+    const results: string[] = [];
+    let clock = 0;
+    const cache = new SchemaRevisionCache<string>({
+      fetch: async (key: string) => `compiled:${key}`,
+      ttlMs: 1000,
+      now: () => clock,
+      onResult: (result) => results.push(result),
+    });
+
+    await cache.get(REV_A);
+    clock = 5000;
+    await cache.get(REV_A);
+
+    expect(results).toEqual(["miss", "miss"]);
   });
 });

@@ -146,7 +146,7 @@ describe("pattern validation", () => {
 });
 
 describe("lookup caching", () => {
-  // §4.5: build the resolved map once, do not re-scan patterns on every message.
+  // Build the resolved map once; patterns must not be re-scanned for every message.
   test("resolves a repeated type without rescanning", () => {
     const r = router({ "com.example.*": handler("wild") });
     const first = r.resolve("com.example.thing");

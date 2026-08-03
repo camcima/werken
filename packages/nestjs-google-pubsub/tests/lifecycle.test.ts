@@ -53,7 +53,7 @@ function incoming(id = "m1"): IncomingMessage {
 
 const settle = () => new Promise((r) => setImmediate(r));
 
-// §4.1 names these after the broker-neutral Pub/Sub concepts, but the Node SDK's own
+// Werken names these after the broker-neutral Pub/Sub concepts, but the Node SDK's own
 // FlowControlOptions uses maxMessages/maxBytes. Passing our names straight through means the SDK
 // silently ignores them and applies its own defaults instead — flow control that looks configured
 // and is not.
@@ -305,6 +305,34 @@ describe("drain on shutdown", () => {
 
     expect(message.ack).not.toHaveBeenCalled();
     expect(message.nack).toHaveBeenCalledTimes(1);
+  });
+
+  test("keeps draining when nacking a stuck message throws", async () => {
+    const { subscription, client } = fakeClient();
+    const transport = new WerkenPubSubTransport({
+      projectId: "p",
+      subscription: "s",
+      shutdownDrainTimeoutMs: 20,
+      createClient: () => client as never,
+    });
+    const errors: string[] = [];
+    vi.spyOn(transport["logger"], "error").mockImplementation((m: unknown) => void errors.push(String(m)));
+
+    transport.addHandler(TYPE, (async () => new Promise<void>(() => {})) as never, true);
+    await listenReady(transport);
+
+    const message = incoming();
+    message.nack = vi.fn(() => {
+      throw new Error("subscriber already closed");
+    });
+    subscription.emit("message", message);
+    await settle();
+
+    // The drain must still close the subscription and the client: one message that cannot be
+    // nacked is not a reason to abandon shutdown.
+    await expect(transport.close()).resolves.toBeUndefined();
+    expect(errors.join("\n")).toMatch(/failed to nack/);
+    expect(client.close).toHaveBeenCalled();
   });
 
   test("logs rather than crashing when settling a message throws", async () => {

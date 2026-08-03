@@ -73,7 +73,7 @@ describe("consumer span", () => {
     expect(spans[0].kind).toBe(4); // SpanKind.CONSUMER
   });
 
-  test("carries the messaging and cloudevents attributes from §5.5", async () => {
+  test("carries the messaging and cloudevents attributes", async () => {
     const t = telemetry();
     await t.withMessageSpan({ envelope, subscription: "orders-sub", messageId: "m1" }, async () => "ack");
 
@@ -99,6 +99,24 @@ describe("consumer span", () => {
 
     // Same trace id as the producer means the two halves join up in the trace view.
     expect(spanExporter.getFinishedSpans()[0].spanContext().traceId).toBe("4bf92f3577b34da6a3ce929d0e0e4736");
+  });
+
+  // tracestate carries vendor sampling state alongside traceparent; dropping it silently degrades
+  // sampling decisions for everything downstream of this consumer.
+  test("carries the producer's tracestate alongside traceparent", async () => {
+    const t = telemetry();
+    const traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+
+    await t.withMessageSpan(
+      {
+        envelope: { ...envelope, traceparent, tracestate: "vendor=t61rcWkgMzE" },
+        subscription: "orders-sub",
+        messageId: "m1",
+      },
+      async () => "ack",
+    );
+
+    expect(spanExporter.getFinishedSpans()[0].spanContext().traceState?.get("vendor")).toBe("t61rcWkgMzE");
   });
 
   test("starts a fresh trace when the producer sent no traceparent", async () => {

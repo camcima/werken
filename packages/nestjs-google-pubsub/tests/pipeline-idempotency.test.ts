@@ -74,7 +74,7 @@ describe("duplicate suppression", () => {
   });
 });
 
-describe("§5.2 ordering", () => {
+describe("pipeline ordering", () => {
   // A duplicate must not pay the decode cost, and a message already processed successfully must
   // still be acked even if its schema has since become unreadable.
   test("checks idempotency before decoding", async () => {

@@ -23,7 +23,7 @@ function message(overrides: Partial<IncomingMessage> = {}): IncomingMessage {
 }
 
 describe("eventLogFields", () => {
-  test("carries every field §5.5 requires", () => {
+  test("carries every field a pipeline log line needs", () => {
     expect(eventLogFields(message())).toEqual({
       ceId: "01931b7c-3f2a-7000-8000-000000000001",
       ceType: "com.example.thing.happened.v1",

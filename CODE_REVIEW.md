@@ -23,6 +23,39 @@ metadata). Reviewed at commit `e0d620a`.
 > and both defaulting would dedupe against each other. Making that a warning or a startup failure
 > is a behaviour change worth deciding on separately.
 
+## Follow-up: coverage audit (2026-08-03)
+
+A coverage pass afterwards found one more instance of the finding #2 pattern — a documented metric
+that was implemented, unit-tested, and never called. `recordSchemaCache` had no call site anywhere
+in the library, so `werken.schema.cache` was always empty despite appearing in the README's metrics
+table. `SchemaRevisionCache` now reports each lookup through an `onResult` callback, which
+`AvroCodec` forwards and the transport feeds to telemetry. A callback rather than polling
+`cacheStats`, because a counter sampled after the fact cannot attribute individual lookups.
+
+All nine `Telemetry` methods have since been audited for call sites; this was the last orphan.
+
+The same pass also found that a schema resolution failure logged only `could not resolve writer
+schema <name>`, with the cause dropped — so a client without schema support, a schema with no
+definition, and a Schema Service outage were indistinguishable in the logs. The cause is now folded
+into the message.
+
+Coverage went from 95.7% to 98.2% of statements and 91.6% to 94.8% of branches, closing the
+untested paths for the `strict: false` fallback, both schema-fetch error branches, the
+nack-throws-during-drain path, the codec's plain-JSON handling, `tracestate` propagation, and the
+`idempotency.executor` wiring.
+
+What remains uncovered is deliberate and falls into three groups: paths exercised only by the
+integration suite (`createDefaultClient`, `pruneExpiredSql`), no-op stubs and the
+`@opentelemetry/api`-absent branches, and two defensive `if (iterator.done) break` guards in LRU
+eviction that cannot be reached because the loop only runs when the map is over capacity.
+
+One line is worth calling out as genuinely unreachable rather than merely untested:
+`transport.ts`'s `if (this.draining) return` in `handleMessage`. `close()` removes the message
+listener synchronously before its first `await`, so nothing can arrive afterwards. It is kept as
+defence in case listener-removal stops being a hard guarantee, but no honest test reaches it — the
+existing "stops handling messages that arrive after close begins" test passes because the listener
+is gone, not because of this guard.
+
 ## Verdict
 
 This is an unusually well-built library. The ports-and-adapters structure is genuinely clean

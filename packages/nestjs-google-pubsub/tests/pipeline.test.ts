@@ -61,7 +61,7 @@ describe("routing", () => {
     expect(other).not.toHaveBeenCalled();
   });
 
-  // §4.5 onUnhandledPattern defaults to 'ack' — a subscription legitimately receives types this
+  // onUnhandledPattern defaults to 'ack' — a subscription legitimately receives types this
   // consumer does not care about, and nacking them would spin forever.
   test("acks a message no handler matches", async () => {
     expect(await pipelineWith({}).handle(message())).toBe("ack");

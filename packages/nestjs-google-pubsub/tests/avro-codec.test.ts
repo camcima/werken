@@ -159,3 +159,100 @@ describe("caching", () => {
     expect(fetchWriterSchema).toHaveBeenCalledWith(`${NAME}@${REV1}`);
   });
 });
+
+describe("cache result reporting", () => {
+  test("forwards cache hits and misses so the schema cache metric can be fed", async () => {
+    const results: string[] = [];
+    const codec = codecWith({ onCacheResult: (result: string) => results.push(result) });
+    const body = avro.Type.forSchema(WRITER_V1 as avro.Schema).toBuffer({ id: "e1", station: null });
+
+    await codec.decode(body, meta("BINARY"));
+    await codec.decode(body, meta("BINARY"));
+
+    expect(results).toEqual(["miss", "hit"]);
+  });
+
+  test("reports nothing for a message carrying no schema at all", async () => {
+    const results: string[] = [];
+    const codec = codecWith({ onCacheResult: (result: string) => results.push(result) });
+
+    await codec.decode(Buffer.from(JSON.stringify({ plain: true })), {});
+
+    expect(results).toEqual([]);
+  });
+});
+
+/**
+ * `strict: false` trades safety for availability: rather than refusing to decode when the writer
+ * schema is unreachable, it falls back to reading the body as plain JSON. Worth testing precisely
+ * because it is the opt-out from the guarantee the rest of this codec exists to provide.
+ */
+describe("non-strict fallback", () => {
+  test("falls back to plain JSON when the writer schema cannot be fetched", async () => {
+    const warn = vi.fn();
+    const codec = codecWith({
+      strict: false,
+      logger: { debug: vi.fn(), warn },
+      fetchWriterSchema: async () => {
+        throw new Error("schema service unavailable");
+      },
+    });
+
+    const decoded = await codec.decode(Buffer.from(JSON.stringify({ id: "e1" })), meta("JSON"));
+
+    expect(decoded).toEqual({ id: "e1" });
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/falling back to plain JSON/));
+  });
+
+  // The fallback is not a universal safety net: a body written in Avro's binary encoding is not
+  // JSON, so an unreachable schema is still fatal for a BINARY topic.
+  test("still fails on a binary body, which plain JSON cannot represent", async () => {
+    const codec = codecWith({
+      strict: false,
+      logger: { debug: vi.fn(), warn: vi.fn() },
+      fetchWriterSchema: async () => {
+        throw new Error("schema service unavailable");
+      },
+    });
+    const body = avro.Type.forSchema(WRITER_V1 as avro.Schema).toBuffer({ id: "e1", station: null });
+
+    await expect(codec.decode(body, meta("BINARY"))).rejects.toThrow(SchemaDecodeError);
+  });
+
+  test("names the underlying cause, so an operator can tell outage from misconfiguration", async () => {
+    const codec = codecWith({
+      fetchWriterSchema: async () => {
+        throw new Error("schema service unavailable");
+      },
+    });
+    const body = avro.Type.forSchema(WRITER_V1 as avro.Schema).toBuffer({ id: "e1", station: null });
+
+    await expect(codec.decode(body, meta("BINARY"))).rejects.toThrow(/schema service unavailable/);
+  });
+});
+
+describe("unschematised bodies", () => {
+  test("treats an empty body as an undefined payload rather than a parse failure", async () => {
+    expect(await codecWith().decode(Buffer.alloc(0), {})).toBeUndefined();
+  });
+
+  test("reports a body that is not valid JSON", async () => {
+    await expect(codecWith().decode(Buffer.from("{not json"), {})).rejects.toThrow(SchemaDecodeError);
+  });
+});
+
+// A cumulative view for callers using AvroCodec directly; the transport reports per-lookup results
+// through onCacheResult instead, since a counter sampled later cannot attribute individual lookups.
+describe("cacheStats", () => {
+  test("reports cumulative hits and misses", async () => {
+    const codec = codecWith();
+    const body = avro.Type.forSchema(WRITER_V1 as avro.Schema).toBuffer({ id: "e1", station: null });
+
+    expect(codec.cacheStats).toEqual({ hits: 0, misses: 0 });
+
+    await codec.decode(body, meta("BINARY"));
+    await codec.decode(body, meta("BINARY"));
+
+    expect(codec.cacheStats).toEqual({ hits: 1, misses: 1 });
+  });
+});

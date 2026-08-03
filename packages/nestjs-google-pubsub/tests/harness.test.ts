@@ -142,7 +142,7 @@ describe("emitRaw", () => {
     expect(harness.get(ThingStore).saved[0].data).toEqual({ hello: "raw" });
   });
 
-  // §4.4: validation.onInvalidEnvelope defaults to 'dead-letter'. The original is acked only
+  // validation.onInvalidEnvelope defaults to 'dead-letter'. The original is acked only
   // because a copy is safely on the dead-letter topic.
   test("dead-letters a malformed envelope by default", async () => {
     harness = await createWerkenTestHarness({ module: WorkerModule });

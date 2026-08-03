@@ -101,7 +101,7 @@ describe("lifecycle", () => {
     expect(() => transportWith(client).unwrap()).toThrow(/not listening/);
   });
 
-  // §Appendix B: fail loudly at startup. Nest surfaces this through the listen callback, so an
+  // Fail loudly at startup. Nest surfaces this through the listen callback, so an
   // error here must reach it rather than escaping as an unhandled throw.
   test("reports a client construction failure through the listen callback", async () => {
     const transport = new WerkenPubSubTransport({
@@ -198,5 +198,58 @@ describe("on()", () => {
     await settle();
 
     expect(onError).toHaveBeenCalledWith(boom);
+  });
+});
+
+describe("idempotency wiring", () => {
+  // The SQL store is well covered on its own; what is easy to get wrong is the transport option
+  // that builds it, since a store that is never consulted looks exactly like one that finds no
+  // duplicates.
+  test("builds the SQL store from an executor and consults it per message", async () => {
+    const statements: string[] = [];
+    const executor = {
+      execute: async (sql: string) => {
+        statements.push(sql);
+        return { rowCount: sql.startsWith("SELECT") ? 0 : 1 };
+      },
+    };
+    const { subscription, client } = fakeClient();
+    const transport = new WerkenPubSubTransport({
+      projectId: "p",
+      subscription: "s",
+      idempotency: { consumer: "orders", executor: () => executor },
+      createClient: () => client as never,
+    });
+
+    const handler = vi.fn();
+    transport.addHandler(TYPE, handler as never, true);
+    await listenReady(transport);
+
+    subscription.emit("message", incoming());
+    await new Promise((r) => setImmediate(r));
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(statements.some((s) => s.startsWith("SELECT"))).toBe(true);
+    expect(statements.some((s) => s.startsWith("INSERT"))).toBe(true);
+
+    await transport.close();
+  });
+
+  test("refuses a store and an executor together", () => {
+    const { client } = fakeClient();
+
+    expect(
+      () =>
+        new WerkenPubSubTransport({
+          projectId: "p",
+          subscription: "s",
+          idempotency: {
+            consumer: "orders",
+            executor: () => ({ execute: async () => ({ rowCount: 0 }) }),
+            store: { has: async () => false, tryRecord: async () => true },
+          },
+          createClient: () => client as never,
+        }),
+    ).toThrow(/mutually exclusive/);
   });
 });

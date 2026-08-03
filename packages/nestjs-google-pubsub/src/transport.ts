@@ -86,6 +86,7 @@ export class WerkenPubSubTransport
       strict: registry.strict,
       cacheTtlMs: registry.cacheTtlMs,
       maxCachedRevisions: registry.maxCachedRevisions,
+      onCacheResult: (result) => this.telemetry.recordSchemaCache(result),
       logger: { debug: (m) => this.logger.debug?.(m), warn: (m) => this.logger.warn(m) },
     });
   }

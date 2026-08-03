@@ -173,7 +173,7 @@ describe("handler duration metric", () => {
 });
 
 describe("message span wiring", () => {
-  // §5.2: the span opens once a handler is known — unhandled types are not this consumer's work.
+  // The span opens once a handler is known — unhandled types are not this consumer's work.
   test("opens the message span only when a handler resolves", async () => {
     const { telemetry, messageSpans } = recordingTelemetry();
     const handlers: Record<string, () => void> = { [TYPE]: () => {} };

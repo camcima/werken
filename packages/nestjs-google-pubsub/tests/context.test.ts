@@ -84,7 +84,7 @@ describe("buildContext", () => {
   });
 
   describe("orderingKey", () => {
-    // Pub/Sub reports "" when unset; §4.3 types it optional, so a falsy-but-present key would be
+    // Pub/Sub reports "" when unset, and the context types it optional, so a falsy-but-present key would be
     // a trap for `if (ctx.orderingKey)` style checks.
     test("maps an empty ordering key to undefined", () => {
       expect(
