@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 100" role="img" aria-label="werken logo">
+  <defs>
+    <style>
+      @media (prefers-color-scheme: dark) {
+        .logo-text { fill: #e6edf3; }
+        .mark-stroke { stroke: #a78bfa; fill: none; }
+        .mark-fill { fill: #a78bfa; }
+      }
+      @media (prefers-color-scheme: light) {
+        .logo-text { fill: #24292f; }
+        .mark-stroke { stroke: #7c3aed; fill: none; }
+        .mark-fill { fill: #7c3aed; }
+      }
+    </style>
+    <marker id="werken-arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path class="mark-fill" d="M0,0 L8,3 L0,6 Z"/>
+    </marker>
+  </defs>
+
+  <!-- Envelope: the message the messenger carries -->
+  <rect
+    class="mark-fill"
+    x="12"
+    y="33"
+    width="52"
+    height="34"
+    rx="4"
+    opacity="0.12"
+  />
+  <rect
+    class="mark-stroke"
+    x="12"
+    y="33"
+    width="52"
+    height="34"
+    rx="4"
+    stroke-width="2"
+  />
+  <!-- Flap -->
+  <path
+    class="mark-stroke"
+    d="M12 38 L38 55 L64 38"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <!-- Dispatch: the message in flight, fading back into motion -->
+  <line
+    class="mark-stroke"
+    x1="74"
+    y1="50"
+    x2="100"
+    y2="50"
+    stroke-width="2"
+    stroke-linecap="round"
+    marker-end="url(#werken-arrowhead)"
+  />
+  <line
+    class="mark-stroke"
+    x1="76"
+    y1="40"
+    x2="94"
+    y2="40"
+    stroke-width="2"
+    stroke-linecap="round"
+    opacity="0.55"
+  />
+  <line
+    class="mark-stroke"
+    x1="76"
+    y1="60"
+    x2="94"
+    y2="60"
+    stroke-width="2"
+    stroke-linecap="round"
+    opacity="0.3"
+  />
+
+  <!-- Logo text -->
+  <text
+    class="logo-text"
+    x="126"
+    y="66"
+    font-family="Georgia, 'Times New Roman', serif"
+    font-size="60"
+    font-weight="bold"
+    letter-spacing="6"
+  >
+    werken
+  </text>
+</svg>

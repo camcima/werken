@@ -1,14 +1,175 @@
-# Werken
+<div align="center">
 
-NestJS transport for Google Cloud Pub/Sub speaking CloudEvents 1.0. Write an event consumer as an
-ordinary Nest controller and get schema resolution, envelope validation, idempotency, dead-lettering
-and clean shutdown without writing any of them yourself.
+<picture>
+  <img alt="werken" src="assets/logo.svg" width="520">
+</picture>
 
-| Package                                | What it is                                                                                |
-| -------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `@werken/cloudevents`                  | CloudEvents 1.0 envelope types, validation, Pub/Sub attribute binding. Zero dependencies. |
-| `@werken/nestjs-google-pubsub`         | The transport, publisher, schema codec and idempotency.                                   |
-| `@werken/nestjs-google-pubsub/testing` | In-memory harness. No broker, no credentials, no emulator.                                |
+<br>
+
+[![CI](https://github.com/camcima/werken/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/camcima/werken/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/camcima/werken/graph/badge.svg)](https://codecov.io/gh/camcima/werken)
+[![npm version](https://img.shields.io/npm/v/@werken/nestjs-google-pubsub)](https://www.npmjs.com/package/@werken/nestjs-google-pubsub)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9%2B-blue.svg)](https://www.typescriptlang.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-22%20%7C%2024-green.svg)](https://nodejs.org/)
+
+</div>
+
+A NestJS transport for Google Cloud Pub/Sub that speaks [CloudEvents 1.0](https://cloudevents.io/).
+Write an event consumer as an ordinary Nest controller and get schema resolution, envelope
+validation, idempotency, dead-lettering, distributed tracing and clean shutdown without writing any
+of them yourself.
+
+_Werken_ is Mapudungun for **messenger** — the emissary who carries word between communities.
+
+```ts
+@Controller()
+export class ShipmentEventsConsumer {
+  constructor(
+    private readonly dispatch: DispatchShipment,
+    private readonly shipments: ShipmentLookup,
+  ) {}
+
+  @EventPattern("com.example.shipment.ready.v1")
+  async onShipmentReady(@Payload() data: ShipmentReadyV1, @Ctx() ctx: CloudEventContext) {
+    const shipment = await this.shipments.find(data.shipmentId);
+    if (shipment === undefined) {
+      throw new TerminalEventError(`unknown shipment ${data.shipmentId}`);
+    }
+    await this.dispatch.execute({ shipment, carrier: data.carrier, occurredAt: ctx.time });
+  }
+}
+```
+
+Returning acks. Throwing nacks. `TerminalEventError` dead-letters. Everything else — decoding,
+de-duplication, tracing, draining — happens around the handler.
+
+## Features
+
+- **CloudEvents 1.0 on the wire** — binary content mode, so any CloudEvents consumer in any language
+  can read your events. No framework envelope wrapped around the payload.
+- **Outcome by return value** — `return` to ack, `throw` to nack and retry, `TerminalEventError` to
+  dead-letter immediately without burning the retry budget.
+- **Explicit dead-lettering** — publishes to a topic you configure, preserving the original body and
+  attributes and adding provenance (reason, stage, source subscription, timestamp). Not the
+  subscription's retry policy, which only triggers after every retry is exhausted.
+- **Avro schema resolution** — fetches the _writer_ schema by revision from the Pub/Sub Schema
+  Service and resolves it against your compiled _reader_ type. Cached by revision id, single-flight,
+  LRU- and TTL-bounded, fails closed.
+- **Idempotency** — a pluggable store with a driver-free Postgres implementation, plus documented
+  adapters for pg, Kysely, Drizzle, Prisma, TypeORM, Redis and MongoDB.
+- **Wildcard routing** — exact, suffix wildcard and catch-all patterns with deterministic precedence.
+  Ambiguous or unsupported patterns fail at startup, never silently.
+- **OpenTelemetry** — one `CONSUMER` span per message continuing the producer's trace, child spans
+  for decode and handler, and seven metrics including event lateness. Optional peer dependency;
+  degrades to a no-op when absent.
+- **Graceful drain** — on `SIGTERM`, stops taking work, waits out in-flight handlers, then nacks the
+  remainder so they are redelivered promptly rather than waiting for the ack deadline to lapse.
+- **Testable without GCP** — an in-memory harness with real Nest DI. No broker, no credentials, no
+  emulator.
+- **Dual ESM + CJS** — every entry point importable from both.
+
+## Packages
+
+| Package                                                                             | Description                                                                                                                  |
+| ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| [`@werken/cloudevents`](packages/cloudevents)                                       | CloudEvents 1.0 envelope types, validation and Pub/Sub attribute binding. Zero runtime dependencies, no GCP or Nest imports. |
+| [`@werken/nestjs-google-pubsub`](packages/nestjs-google-pubsub)                     | The transport, publisher, Avro codec and idempotency.                                                                        |
+| [`@werken/nestjs-google-pubsub/testing`](packages/nestjs-google-pubsub/src/testing) | In-memory test harness. A subpath rather than a package, so it can never version-skew from the transport it wraps.           |
+
+## Installation
+
+```bash
+pnpm add @werken/nestjs-google-pubsub @google-cloud/pubsub
+# optional, for tracing and metrics
+pnpm add @opentelemetry/api
+```
+
+## Quick start
+
+```ts
+// main.worker.ts — Cloud Run worker pools have no HTTP endpoint,
+// so this is a microservice, not an HTTP app.
+const app = await NestFactory.createMicroservice(WorkerModule, {
+  strategy: new WerkenPubSubTransport({
+    projectId: process.env.GCP_PROJECT_ID!,
+    subscription: process.env.PUBSUB_SUBSCRIPTION!,
+    deadLetterTopic: process.env.PUBSUB_DEAD_LETTER_TOPIC,
+    idempotency: { consumer: "shipment-dispatch" },
+    telemetry: { serviceName: "shipment-dispatch" },
+  }),
+  bufferLogs: true,
+});
+
+// Without this, Nest never calls the transport's close(), so scale-down kills
+// in-flight handlers and every interrupted message is reprocessed.
+app.enableShutdownHooks();
+
+await app.listen();
+```
+
+A complete, runnable service is in [`examples/minimal-consumer`](examples/minimal-consumer).
+
+## How it differs from Nest's own abstraction
+
+Werken is a `CustomTransportStrategy`, so it lives inside Nest's microservices abstraction rather
+than replacing it — you keep controllers, DI, `@EventPattern`, guards, interceptors and pipes. What
+changes is the wire format and the delivery contract.
+
+|                    | Nest default                          | Werken                      |
+| ------------------ | ------------------------------------- | --------------------------- |
+| Wire format        | `{ pattern, data }` envelope          | CloudEvents 1.0 binary mode |
+| Routing key        | inside the payload                    | `ce-type` attribute         |
+| Readable by        | Nest only                             | any CloudEvents consumer    |
+| Handler throws     | logged, message acked                 | nacked and redelivered      |
+| Error identity     | replaced with `Internal server error` | preserved                   |
+| Duplicate patterns | chained, only the first runs          | fails at startup            |
+
+Two of those rows are behaviours of the default abstraction that will silently lose messages in a
+naive transport, and both took real work to defeat:
+
+- **Handlers resolve to Observables, and awaiting one is a no-op** — so a transport written the
+  obvious way acks a throwing handler and loses the message.
+- **`RpcExceptionsHandler` replaces any non-`RpcException` error** with
+  `{ status: 'error', message: 'Internal server error' }` before the transport sees it. That is why
+  `TerminalEventError` extends `RpcException`.
+
+**→ [The full comparison, with the source that proves each claim](docs/vs-nestjs-microservices.md)**
+
+## Message pipeline
+
+Every message passes through these stages. Any stage can terminate it with an outcome.
+
+```
+receive
+  → parse envelope        invalid → validation.onInvalidEnvelope (default dead-letter)
+  → resolve handler       none    → onUnhandledPattern (default ack)
+  → open telemetry span   parented on ce-traceparent
+  → idempotency check     already processed → ack, count as skipped duplicate
+  → decode payload        failure → validation.onDecodeFailure (default dead-letter)
+  → invoke handler        lease extension running
+  → record idempotency
+  → outcome               ack | nack | dead-letter
+```
+
+Two orderings in there are deliberate and worth knowing:
+
+- **The idempotency check precedes decode.** A duplicate should not pay the decode cost, and a
+  message already processed successfully must still be acked even if its schema has since become
+  unreadable.
+- **Idempotency is recorded after the handler succeeds and before the ack.** Recording earlier risks
+  silently swallowing a message whose handler then failed; recording after the ack risks a crash in
+  between. Neither is eliminable — this is at-least-once — which is exactly why handlers must remain
+  idempotent regardless.
+
+## Documentation
+
+| Guide                                                            | What it covers                                          |
+| ---------------------------------------------------------------- | ------------------------------------------------------- |
+| [Migrating an existing consumer](docs/migration.md)              | What to delete, and the one behaviour change that bites |
+| [Werken vs. Nest microservices](docs/vs-nestjs-microservices.md) | Every difference, with the source that proves it        |
+| [Idempotency schema](docs/idempotency-schema.sql)                | DDL for your own migration pipeline                     |
+| [Worked example](examples/minimal-consumer)                      | A 12-line handler with tests that need no GCP           |
 
 ---
 
@@ -232,11 +393,12 @@ const store: IdempotencyStore = {
 };
 ```
 
+Redis can never support Mode B: there is no shared transaction with your business write.
+
 ### MongoDB — unique index and duplicate-key errors
 
-Insert into a collection with a unique index on the key and treat error code `11000`
-(duplicate key) as "already processed". A TTL index on `expiresAt` handles expiry, so again no
-pruning job.
+Insert into a collection with a unique index on the key and treat error code `11000` (duplicate key)
+as "already processed". A TTL index on `expiresAt` handles expiry, so again no pruning job.
 
 ```ts
 // One-off, in your migrations:
@@ -264,6 +426,8 @@ const store: IdempotencyStore = {
   has: async (key) => (await collection.countDocuments({ key: idempotencyKeyToString(key) }, { limit: 1 })) > 0,
 };
 ```
+
+Unlike Redis, MongoDB _can_ reach Mode B through a session/transaction.
 
 Pass either one as `idempotency: { consumer, store }`. `store` and `executor` are mutually
 exclusive — supplying both throws at startup rather than silently picking one.
@@ -293,7 +457,7 @@ commits atomically with the business write. Same `SqlExecutor`, same config shap
 
 > Mode B is not wired up yet. The port is shaped for it; the pipeline still calls `tryRecord` after
 > the handler returns, which means the handler's transaction must still be open at that point for
-> the two writes to be atomic. That sequencing is unresolved — see the open questions in the spec.
+> the two writes to be atomic. That sequencing is unresolved.
 
 ### Therefore
 
@@ -322,6 +486,36 @@ Two failures are deliberately made loud at startup rather than left to productio
   register successfully and then never run. Werken refuses to start instead.
 - **A wildcard anywhere but the final segment.** `com.*.thing` is rejected, because a pattern that
   silently never matches is much harder to notice than a boot error.
+
+---
+
+## Schemas
+
+Werken resolves the **writer** schema by revision from the Pub/Sub Schema Service and decodes it
+into the compiled **reader** type your service imports:
+
+```ts
+schemaRegistry: {
+  readerTypeFor: (schemaName) => readerTypes[schemaName],
+  strict: true, // default — fail closed rather than guess
+}
+```
+
+Behaviour that matters:
+
+- **Cached by revision id, never by schema name.** Producers move between revisions independently, so
+  a name-keyed cache would decode new bytes against a stale writer schema — silent corruption rather
+  than a loud failure.
+- **Single-flight.** Concurrent misses on one revision make a single Schema Service call, not one per
+  in-flight message. Failures are not cached, so a transient outage cannot pin a revision.
+- **Bounded.** LRU plus TTL, so corrections get picked up.
+- **An unknown revision is normal**, not an error — a producer rolling out ahead of its consumers is
+  the expected steady state. Logged at debug.
+
+> ⚠️ **Pub/Sub's `JSON` encoding is Avro JSON, not plain JSON.** A nullable union is
+> `{"string":"SCL"}`, not `"SCL"`, and plain JSON is _rejected_ outright by a schema-attached topic.
+> Prefer non-null fields with defaults over nullable unions: it keeps payloads readable and evolves
+> more cleanly. This was verified empirically — the integration tests publish both forms.
 
 ---
 
@@ -381,13 +575,82 @@ receive their own copy of the same published events.
 
 ---
 
-## Guides
+## Testing
 
-- [Migrating an existing consumer](docs/migration.md)
-- [A worked example](examples/minimal-consumer) — a consumer whose handler is 12 lines, with tests
-  that need no broker, credentials or emulator
+The harness runs your real module through real Nest DI and the real pipeline. Only the broker is
+in-memory: no network, no credentials, no emulator.
+
+```ts
+const harness = await createWerkenTestHarness({
+  module: WorkerModule,
+  overrides: [{ provide: ShipmentLookup, useValue: fakeShipments }],
+});
+
+await harness.emit("com.example.shipment.ready.v1", payload, { subject: "known-1" });
+
+expect(harness.acked).toHaveLength(1);
+expect(harness.deadLettered).toHaveLength(0);
+```
+
+Also available: `emitRaw(attributes, body)` for envelope-level tests, `drain()` to simulate
+shutdown, deterministic clock injection via `now`, and `get(token)` to reach into the module.
+
+For anything that talks to a real dependency, use an integration test — the Pub/Sub emulator
+supports schemas, so schema resolution, dead-lettering and publishing can all be exercised end to
+end without a GCP project.
 
 ---
+
+## Publishing
+
+```ts
+const publisher = createEventPublisher({
+  source: "https://example.com/orders",
+  client: new PubSub({ projectId }),
+  topicResolver: (type) => topicMap[type],
+  encode: (type, data) => Buffer.from(readerTypes[type].toString(data)), // Avro JSON
+});
+
+await publisher.publish({
+  type: "com.example.order.placed.v1",
+  data: { orderId: "abc" },
+  subject: "abc",
+});
+```
+
+The publisher generates a time-ordered UUIDv7 `ce-id`, stamps `ce-time` and `ingestiontime`
+separately, lifts `traceparent` from the ambient OpenTelemetry context, derives the ordering key
+from `subject`, and resolves the destination topic from the event type.
+
+## Observability
+
+One `CONSUMER` span per message named `{ce-type} process`, continuing the producer's trace from
+`ce-traceparent`, with child spans for decode and handler.
+
+| Metric                     | Type            | Labels                 |
+| -------------------------- | --------------- | ---------------------- |
+| `werken.messages.received` | counter         | `type`, `subscription` |
+| `werken.messages.outcome`  | counter         | `type`, `outcome`      |
+| `werken.handler.duration`  | histogram       | `type`                 |
+| `werken.decode.failures`   | counter         | `type`, `reason`       |
+| `werken.schema.cache`      | counter         | `result`               |
+| `werken.messages.inflight` | up-down counter | `subscription`         |
+| `werken.event.lateness`    | histogram       | `type`                 |
+
+`werken.event.lateness` (`now - ce-time`, in seconds) is deliberately included: for events that
+routinely arrive long after they happened, the distribution of lateness is an operational signal in
+its own right, not just a debugging aid.
+
+Every pipeline log line carries `ce-id`, `ce-type`, `ce-source`, `ce-subject`, `deliveryAttempt` and
+`messageId` as embedded JSON, which Cloud Logging parses into queryable fields.
+
+> Spans only propagate if a `ContextManager` is registered — the OpenTelemetry Node SDK does this for
+> you. Without one, `context.active()` always returns root and child spans come out unparented.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Note that pnpm 11 does not run lifecycle scripts by default,
+so git hooks need `pnpm run hooks:install` explicitly.
 
 ## Licence
 
