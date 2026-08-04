@@ -24,7 +24,8 @@
       "@werken/nestjs-google-pubsub": ["packages/nestjs-google-pubsub/src/index.ts"],
       "@werken/nestjs-google-pubsub/testing": ["packages/nestjs-google-pubsub/src/testing/index.ts"],
       "@werken/nestjs-google-pubsub/internal": ["packages/nestjs-google-pubsub/src/internal.ts"],
-      "@werken/test-support": ["tests/support/requires.ts"]
+      "@werken/test-support": ["tests/support/requires.ts"],
+      "@werken/test-support/pubsub": ["tests/support/pubsub-fixtures.ts"]
     }
   },
   "include": ["packages/*/src", "packages/*/tests", "examples/*/src", "examples/*/tests", "*.ts", "tests/support"]

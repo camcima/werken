@@ -5,6 +5,7 @@ import { PubSub } from "@google-cloud/pubsub";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { toPubSubAttributes } from "@werken/cloudevents";
 import { skipUnlessAvailable } from "@werken/test-support";
+import { resetPubSubFixtures, tidyPubSubFixtures } from "@werken/test-support/pubsub";
 
 const EMULATOR = process.env.PUBSUB_EMULATOR_HOST;
 const PROJECT = process.env.PUBSUB_PROJECT_ID ?? "werken-it";
@@ -25,25 +26,21 @@ describe.skipIf(
   skipUnlessAvailable("PUBSUB_EMULATOR_HOST", EMULATOR) ||
     skipUnlessAvailable("a built examples/minimal-consumer (run `pnpm run build`)", existsSync(WORKER)),
 )("the worked example builds and runs", () => {
-  const suffix = Date.now();
-  const topicId = `werken-example-topic-${suffix}`;
-  const subscriptionId = `werken-example-sub-${suffix}`;
+  // Fixed, and specific to this file. See @werken/test-support/pubsub for why these are not
+  // suffixed per run and why beforeAll deletes before it creates.
+  const topicId = "werken-example-topic";
+  const subscriptionId = "werken-example-sub";
+  const fixtures = { subscriptions: [subscriptionId], topics: [topicId] };
   const pubsub = new PubSub({ projectId: PROJECT });
 
   beforeAll(async () => {
+    await resetPubSubFixtures(pubsub, fixtures);
     await pubsub.createTopic(topicId);
     await pubsub.topic(topicId).createSubscription(subscriptionId, { ackDeadlineSeconds: 60 });
   });
 
   afterAll(async () => {
-    await pubsub
-      .subscription(subscriptionId)
-      .delete()
-      .catch(() => {});
-    await pubsub
-      .topic(topicId)
-      .delete()
-      .catch(() => {});
+    await tidyPubSubFixtures(pubsub, fixtures);
     await pubsub.close();
   });
 
@@ -67,7 +64,10 @@ describe.skipIf(
         data: Buffer.from(JSON.stringify({ shipmentId: "known-1", carrier: "dhl" })),
         attributes: toPubSubAttributes({
           specversion: "1.0",
-          id: `example-${suffix}`,
+          // Fixed like the resources it travels on. Nothing dedupes across runs — the example
+          // configures no idempotency executor, so the store is the no-op one — and beforeAll
+          // recreates the subscription, so this run's copy is the only one on it.
+          id: "01931b7c-3f2a-7000-8000-0000000examp",
           source: "https://example.test/orders",
           type: TYPE,
           datacontenttype: "application/json",

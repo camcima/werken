@@ -7,6 +7,7 @@ import pg from "pg";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { DEAD_LETTER_ATTRIBUTES } from "@werken/nestjs-google-pubsub";
 import { skipUnlessAvailable } from "@werken/test-support";
+import { resetPubSubFixtures, tidyPubSubFixtures } from "@werken/test-support/pubsub";
 
 const run = promisify(execFile);
 const EMULATOR = process.env.PUBSUB_EMULATOR_HOST;
@@ -37,36 +38,48 @@ describe.skipIf(
   const pool = new pg.Pool({ connectionString: DATABASE_URL });
   const pubsub = new PubSub({ projectId: PROJECT });
 
-  const suffix = Date.now();
-
   /**
-   * Its own subscription per run, rather than the provisioned `shipment-projection`.
+   * Its own subscription, rather than the provisioned `shipment-projection`.
    *
    * The worker is killed the moment the projection is complete, which is before the SDK has
    * flushed the acks for the messages it just handled, so those come back as a backlog. Every run
    * starts by clearing the dedup markers, so the next run's worker cheerfully reprocesses them —
    * and because the payloads are identical, every assertion here still passes while measuring the
    * *previous* run's events. Draining a shared subscription for 25 runs turned up 75 stranded
-   * messages, which is how that was found. A subscription deleted in afterAll cannot leak.
+   * messages, which is how that was found.
+   *
+   * The name is fixed rather than suffixed per run, and beforeAll deletes it before recreating it.
+   * That is what discards the backlog, and unlike deleting it in afterAll it also holds when the
+   * previous run never reached afterAll at all.
    */
-  const subscriptionId = `shipment-projection-it-${suffix}`;
+  const subscriptionId = "shipment-projection-it";
 
   /**
    * Where anything the worker gives up on lands. Created here rather than in provision.mjs, and
    * before the worker starts, because Pub/Sub fans a message out only to the subscriptions that
    * already exist when it is published — a subscription attached afterwards sees nothing and would
-   * make "no dead letters" true by construction.
+   * make "no dead letters" true by construction. Recreated for the same reason as the one above:
+   * a previous run's dead letter still sitting here would fail this run's `toEqual([])`.
    */
-  const deadLetterSubId = `shipment-dead-letters-it-${suffix}`;
+  const deadLetterSubId = "shipment-dead-letters-it";
+
+  // Only the subscriptions. The topics and the schema belong to provision.mjs, which is idempotent
+  // and is run below — deleting them here would be this file reaching into another file's fixtures.
+  const fixtures = { subscriptions: [subscriptionId, deadLetterSubId] };
 
   beforeAll(async () => {
     // Creates the schema, the schema-attached topic, the dead-letter topic and both tables — and
     // fails loudly if any of it is wrong, so a broken provisioning script is caught here.
     await run(process.execPath, [PROVISION], { env });
+    // Reset before create, not create-and-hope: `enableMessageOrdering` is fixed at creation, so a
+    // leftover subscription from before that flag was set here could not be corrected in place.
+    await resetPubSubFixtures(pubsub, fixtures);
     // Ordering mirrors what provision.mjs gives the real subscription.
     await pubsub.topic(TOPIC).createSubscription(subscriptionId, { enableMessageOrdering: true });
     await pubsub.topic(DEAD_LETTER_TOPIC).createSubscription(deadLetterSubId);
 
+    // The Postgres fixtures were already reset here rather than after the run, and the Pub/Sub ones
+    // above now follow the same rule — one discipline for the whole file.
     await pool.query("DELETE FROM shipment_projection");
     // Scoped to this consumer, not a bare DELETE: `werken_processed_events` is the library's
     // default table, so the package's own SQL-store suite writes into the same rows from another
@@ -75,12 +88,7 @@ describe.skipIf(
   }, 60_000);
 
   afterAll(async () => {
-    for (const id of [subscriptionId, deadLetterSubId]) {
-      await pubsub
-        .subscription(id)
-        .delete()
-        .catch(() => {});
-    }
+    await tidyPubSubFixtures(pubsub, fixtures);
     await pubsub.close();
     await pool.end();
   });

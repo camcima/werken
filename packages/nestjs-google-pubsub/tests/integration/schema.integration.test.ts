@@ -5,6 +5,7 @@ import { toPubSubAttributes } from "@werken/cloudevents";
 import { WerkenPubSubTransport } from "@werken/nestjs-google-pubsub";
 import type { PubSubClientLike } from "@werken/nestjs-google-pubsub";
 import { skipUnlessAvailable } from "@werken/test-support";
+import { resetPubSubFixtures, tidyPubSubFixtures } from "@werken/test-support/pubsub";
 
 const EMULATOR = process.env.PUBSUB_EMULATOR_HOST;
 const PROJECT = process.env.PUBSUB_PROJECT_ID ?? "werken-it";
@@ -25,14 +26,20 @@ const READER = avro.Type.forSchema(SCHEMA as avro.Schema);
  * real googclient_* attributes, and a real Schema Service fetch by revision.
  */
 describe.skipIf(skipUnlessAvailable("PUBSUB_EMULATOR_HOST", EMULATOR))("schema resolution against the emulator", () => {
-  const suffix = Date.now();
-  const schemaId = `werken-it-schema-${suffix}`;
-  const topicId = `werken-it-schema-topic-${suffix}`;
-  const subscriptionId = `werken-it-schema-sub-${suffix}`;
+  // Fixed, and specific to this file. See @werken/test-support/pubsub for why these are not
+  // suffixed per run and why beforeAll deletes before it creates.
+  const schemaId = "werken-it-schema";
+  const topicId = "werken-it-schema-topic";
+  const subscriptionId = "werken-it-schema-sub";
+  const fixtures = { subscriptions: [subscriptionId], topics: [topicId], schemas: [schemaId] };
   const pubsub = new PubSub({ projectId: PROJECT });
   let transport: WerkenPubSubTransport;
 
   beforeAll(async () => {
+    // The schema is what this suite is about, so it is rebuilt rather than reused: createSchema on
+    // an existing name adds a revision, and the whole point here is a fetch by the revision this
+    // run's SCHEMA produced.
+    await resetPubSubFixtures(pubsub, fixtures);
     await pubsub.createSchema(schemaId, SchemaTypes.Avro, JSON.stringify(SCHEMA));
     await pubsub.createTopic({
       name: topicId,
@@ -46,18 +53,7 @@ describe.skipIf(skipUnlessAvailable("PUBSUB_EMULATOR_HOST", EMULATOR))("schema r
 
   afterAll(async () => {
     await transport?.close();
-    await pubsub
-      .subscription(subscriptionId)
-      .delete()
-      .catch(() => {});
-    await pubsub
-      .topic(topicId)
-      .delete()
-      .catch(() => {});
-    await pubsub
-      .schema(schemaId)
-      .delete()
-      .catch(() => {});
+    await tidyPubSubFixtures(pubsub, fixtures);
     await pubsub.close();
   });
 

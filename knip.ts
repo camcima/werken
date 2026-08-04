@@ -12,7 +12,7 @@ import type { KnipConfig } from "knip";
 const config: KnipConfig = {
   workspaces: {
     ".": {
-      entry: ["tests/support/requires.ts"],
+      entry: ["tests/support/requires.ts", "tests/support/pubsub-fixtures.ts"],
       project: ["*.ts", "tests/**/*.ts"],
     },
 
@@ -43,9 +43,11 @@ const config: KnipConfig = {
        */
       paths: {
         "@werken/nestjs-google-pubsub/internal": ["src/internal.ts"],
-        // Shared skip helper, aliased the same way in vitest.shared.ts. Without this Knip sees an
-        // import it cannot resolve to any installed package and reports it as an unlisted dependency.
+        // Shared skip and fixture helpers, aliased the same way in vitest.shared.ts. Without this
+        // Knip sees an import it cannot resolve to any installed package and reports it as an
+        // unlisted dependency.
         "@werken/test-support": ["../../tests/support/requires.ts"],
+        "@werken/test-support/pubsub": ["../../tests/support/pubsub-fixtures.ts"],
       },
       /**
        * Optional on purpose. It is loaded lazily through `optionalRequire`, and every telemetry
@@ -59,10 +61,12 @@ const config: KnipConfig = {
     "examples/minimal-consumer": {
       entry: ["src/main.worker.ts"],
       project: ["src/**/*.ts", "tests/**/*.ts"],
-      // Shared skip helper, aliased the same way in vitest.shared.ts. Without this Knip sees an
-      // import it cannot resolve to any installed package and reports it as an unlisted dependency.
+      // Shared skip and fixture helpers, aliased the same way in vitest.shared.ts. Without this
+      // Knip sees an import it cannot resolve to any installed package and reports it as an
+      // unlisted dependency.
       paths: {
         "@werken/test-support": ["../../tests/support/requires.ts"],
+        "@werken/test-support/pubsub": ["../../tests/support/pubsub-fixtures.ts"],
       },
     },
 
@@ -73,10 +77,12 @@ const config: KnipConfig = {
       // package.json's `provision` script and by the integration test — not imported from
       // anywhere in the module graph — so Knip needs it in-project to resolve it at all.
       project: ["src/**/*.ts", "tests/**/*.ts", "scripts/**/*.mjs"],
-      // Shared skip helper, aliased the same way in vitest.shared.ts. Without this Knip sees an
-      // import it cannot resolve to any installed package and reports it as an unlisted dependency.
+      // Shared skip and fixture helpers, aliased the same way in vitest.shared.ts. Without this
+      // Knip sees an import it cannot resolve to any installed package and reports it as an
+      // unlisted dependency.
       paths: {
         "@werken/test-support": ["../../tests/support/requires.ts"],
+        "@werken/test-support/pubsub": ["../../tests/support/pubsub-fixtures.ts"],
       },
     },
 

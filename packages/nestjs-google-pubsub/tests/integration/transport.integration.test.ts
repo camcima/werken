@@ -4,6 +4,7 @@ import { toPubSubAttributes } from "@werken/cloudevents";
 import { WerkenPubSubTransport } from "@werken/nestjs-google-pubsub";
 import type { CloudEventContext, PubSubClientLike } from "@werken/nestjs-google-pubsub";
 import { skipUnlessAvailable } from "@werken/test-support";
+import { resetPubSubFixtures, tidyPubSubFixtures } from "@werken/test-support/pubsub";
 
 const EMULATOR = process.env.PUBSUB_EMULATOR_HOST;
 const PROJECT = process.env.PUBSUB_PROJECT_ID ?? "werken-it";
@@ -14,27 +15,26 @@ const TYPE = "com.example.thing.happened.v1";
  * credentials or spend. Skipped when the emulator is not running so `pnpm test` stays green.
  */
 describe.skipIf(skipUnlessAvailable("PUBSUB_EMULATOR_HOST", EMULATOR))("transport against the Pub/Sub emulator", () => {
-  const suffix = Date.now();
-  const topicId = `werken-it-topic-${suffix}`;
-  const subscriptionId = `werken-it-sub-${suffix}`;
+  // Fixed, and specific to this file. See @werken/test-support/pubsub for why these are not
+  // suffixed per run and why beforeAll deletes before it creates.
+  const topicId = "werken-it-topic";
+  const subscriptionId = "werken-it-sub";
+  // Created by the second test rather than by beforeAll, but reset with the rest of them: a run
+  // killed before its `finally` leaves this behind, and the next createSubscription would fail.
+  const ownClientSubId = `${subscriptionId}-own`;
+  const fixtures = { subscriptions: [subscriptionId, ownClientSubId], topics: [topicId] };
   const pubsub = new PubSub({ projectId: PROJECT });
   let transport: WerkenPubSubTransport;
 
   beforeAll(async () => {
+    await resetPubSubFixtures(pubsub, fixtures);
     await pubsub.createTopic(topicId);
     await pubsub.topic(topicId).createSubscription(subscriptionId);
   });
 
   afterAll(async () => {
     await transport?.close();
-    await pubsub
-      .subscription(subscriptionId)
-      .delete()
-      .catch(() => {});
-    await pubsub
-      .topic(topicId)
-      .delete()
-      .catch(() => {});
+    await tidyPubSubFixtures(pubsub, fixtures);
     await pubsub.close();
   });
 
@@ -94,7 +94,6 @@ describe.skipIf(skipUnlessAvailable("PUBSUB_EMULATOR_HOST", EMULATOR))("transpor
   // loadPackage. Injecting a client in the test above would leave that path unexercised.
   test("builds its own Pub/Sub client when createClient is not supplied", async () => {
     const received: unknown[] = [];
-    const ownClientSubId = `${subscriptionId}-own`;
     await pubsub.topic(topicId).createSubscription(ownClientSubId);
 
     const own = new WerkenPubSubTransport({ projectId: PROJECT, subscription: ownClientSubId });
@@ -120,11 +119,9 @@ describe.skipIf(skipUnlessAvailable("PUBSUB_EMULATOR_HOST", EMULATOR))("transpor
       await waitFor(() => received.length > 0, 20_000);
       expect(received[0]).toEqual({ via: "default-factory" });
     } finally {
+      // Only the subscriber is closed here; the subscription itself is left to afterAll, which
+      // owns every fixture this file names, and to the next run's reset if afterAll never runs.
       await own.close();
-      await pubsub
-        .subscription(ownClientSubId)
-        .delete()
-        .catch(() => {});
     }
   }, 60_000);
 });
