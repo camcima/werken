@@ -39,6 +39,33 @@ The last two exist because this library is meant to be handed to another team an
 If a change seems to require the library to understand a domain concept, the design is wrong —
 raise it rather than adding the term to the denylist.
 
+## Releasing
+
+Two stages, deliberately separate. The first is local and reversible; the second is the one that
+cannot be taken back.
+
+```bash
+pnpm run release          # bump versions, write CHANGELOG, commit — nothing leaves the machine
+git push                  # review the changelog first
+pnpm run release:publish  # prompts, then tags, pushes, publishes and drafts the GitHub release
+```
+
+`release:publish` is deliberately **not** run with `--ci`. That buys two things:
+
+- **It asks before acting.** release-it prompts before creating the tag, pushing it, and creating
+  the GitHub release, so a release can be stopped at any of those points.
+- **npm can prompt.** If the registry challenges for a one-time password, `pnpm publish` needs an
+  interactive terminal to ask. Under `--ci` it cannot, and the publish dies with
+  `ERR_PNPM_OTP_NON_INTERACTIVE` _after_ the tag has already been created — leaving a tag for a
+  version that was never published.
+
+It reads `GITHUB_TOKEN`, falling back to `gh auth token`, so an authenticated `gh` needs no extra
+setup. For automation, pass an OTP explicitly instead:
+
+```bash
+NPM_OTP=123456 pnpm exec release-it --no-increment --ci --config .release-it.publish.json
+```
+
 ## Dead code
 
 `pnpm run lint:dead-code` runs [Knip](https://knip.dev) over the whole workspace and fails on

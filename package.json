@@ -19,6 +19,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "release": "release-it",
+    "release:publish": "GITHUB_TOKEN=${GITHUB_TOKEN:-$(gh auth token)} release-it --no-increment --config .release-it.publish.json",
     "security:secrets": "gitleaks detect --no-banner",
     "security:audit": "pnpm audit",
     "prepare": "lefthook install"

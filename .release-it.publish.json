@@ -3,12 +3,14 @@
     "commit": false,
     "tag": true,
     "tagName": "v${version}",
-    "push": false,
+    "push": true,
     "requireUpstream": false,
     "requireCleanWorkingDir": true
   },
   "github": {
-    "release": false
+    "release": true,
+    "releaseName": "v${version}",
+    "web": false
   },
   "npm": {
     "publish": false

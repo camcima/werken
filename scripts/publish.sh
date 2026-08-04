@@ -5,10 +5,12 @@
 # ${...} in hook strings as its own template variables, so shell parameter expansion cannot be used
 # in the hook itself.
 #
-# npm challenges for a one-time password on publish — always for a package being created for the
-# first time, and on every publish for accounts set to "auth and writes". release-it runs hooks
-# non-interactively under --ci, so pnpm cannot prompt and fails with ERR_PNPM_OTP_NON_INTERACTIVE.
-# Pass the code through NPM_OTP:
+# Run it through `pnpm run release:publish`, which is deliberately NOT --ci: release-it prompts
+# before tagging, pushing and creating the GitHub release, and hooks inherit an interactive
+# terminal so pnpm can prompt for a one-time password if the registry asks for one.
+#
+# Under --ci that prompt is impossible and the publish dies with ERR_PNPM_OTP_NON_INTERACTIVE,
+# after the tag has already been created. For automation, pass the code in instead:
 #
 #   NPM_OTP=123456 pnpm exec release-it --no-increment --ci --config .release-it.publish.json
 #
