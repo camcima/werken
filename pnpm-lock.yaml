@@ -160,6 +160,18 @@ importers:
         specifier: ^7.8.2
         version: 7.8.2
 
+  examples/publisher:
+    dependencies:
+      '@google-cloud/pubsub':
+        specifier: ^5.0.0
+        version: 5.3.1(supports-color@7.2.0)
+      '@werken/nestjs-google-pubsub':
+        specifier: workspace:*
+        version: link:../../packages/nestjs-google-pubsub
+      avsc:
+        specifier: ^5.7.9
+        version: 5.7.9
+
   packages/cloudevents: {}
 
   packages/nestjs-google-pubsub:

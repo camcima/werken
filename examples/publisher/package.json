@@ -1,0 +1,17 @@
+{
+  "name": "@werken/example-publisher",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Worked example: publishing CloudEvents to a schema-attached Pub/Sub topic.",
+  "scripts": {
+    "build": "tsc --build",
+    "start": "node dist/main.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@google-cloud/pubsub": "^5.0.0",
+    "@werken/nestjs-google-pubsub": "workspace:*",
+    "avsc": "^5.7.9"
+  }
+}
