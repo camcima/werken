@@ -739,6 +739,12 @@ const publisher = createEventPublisher({
   topicResolver: (type) => topicMap[type],
   encode: (type, data) => Buffer.from(readerTypes[type].toString(data)), // Avro JSON
 });
+
+await publisher.publish({
+  type: "com.example.order.placed.v1",
+  data: { orderId: "abc" },
+  subject: "abc",
+});
 ```
 
 `encode` returning bare bytes declares `application/json`, which is right for the Avro-JSON case
@@ -746,15 +752,15 @@ above. For anything else, say so — otherwise a standards-aware consumer picks 
 lie:
 
 ```ts
-encode: ((type, data) => ({
-  data: protobufFor(type).encode(data).finish(),
-  datacontenttype: "application/protobuf",
-}),
-  await publisher.publish({
-    type: "com.example.order.placed.v1",
-    data: { orderId: "abc" },
-    subject: "abc",
-  }));
+const publisher = createEventPublisher({
+  source: "https://example.com/orders",
+  client: new PubSub({ projectId }),
+  topicResolver: (type) => topicMap[type],
+  encode: (type, data) => ({
+    data: protobufFor(type).encode(data).finish(),
+    datacontenttype: "application/protobuf",
+  }),
+});
 ```
 
 The publisher generates a time-ordered UUIDv7 `ce-id`, stamps `ce-time` and `ingestiontime`

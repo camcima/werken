@@ -108,10 +108,19 @@ export async function createWerkenTestHarness(options: WerkenTestHarnessOptions)
    *
    * The value is a queue, so two genuinely indistinguishable messages — same ce-id, same body —
    * still produce two records rather than one.
+   *
+   * JSON rather than a delimiter, for the same reason `idempotencyKeyToString` uses it: `ce-id` is
+   * producer-controlled and the body is arbitrary bytes, so any separator either could contain
+   * would let two different messages flatten to one key — the collision this map exists to avoid.
+   *
+   * No test demonstrates it. A collision currently resolves correctly anyway, because emits
+   * serialise, so the queue is shifted in the same order it was filled. This is defence against
+   * that ordering assumption changing, and consistency with the idempotency key encoding — not a
+   * fix for a reachable bug.
    */
   const inFlight = new Map<string, HarnessRecord[]>();
   const correlationKey = (attributes: Record<string, string>, body: string) =>
-    `${attributes["ce-id"] ?? ""}\u001f${body}`;
+    JSON.stringify([attributes["ce-id"] ?? "", body]);
 
   const client: PubSubClientLike = {
     subscription: () => subscription,
