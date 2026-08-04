@@ -45,6 +45,14 @@ if (metadata.enableMessageOrdering !== true) {
 await pubsub.close();
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+// `werken_processed_events` mirrors docs/idempotency-schema.sql, which is the canonical copy — the
+// library never runs DDL. It never issues DELETEs either, so pruning is the consumer's job: nothing
+// here or in the worker removes expired markers, and the table grows forever without a scheduled
+//
+//   DELETE FROM werken_processed_events WHERE expires_at < now();
+//
+// `pruneExpiredSql(table?)` is exported for exactly that statement. The expires_at index below
+// serves both the read-side expiry filter and that delete.
 await pool.query(`
   CREATE TABLE IF NOT EXISTS werken_processed_events (
     consumer     text        NOT NULL,

@@ -32,6 +32,8 @@ export class ShipmentEventsConsumer {
     await this.projection.apply({
       shipmentId: requireShipmentId(data),
       status: "cancelled",
+      // Deliberately erases the carrier (the projection writes it as NULL): a cancelled shipment
+      // has no carrier handling it, and leaving the old one there reads as though it still does.
       carrier: undefined,
       occurredAt: ctx.time,
     });

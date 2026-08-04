@@ -57,6 +57,21 @@ describe("shipment events consumer", () => {
     ]);
   });
 
+  // Pub/Sub is at-least-once, so the same `ce-id` will arrive twice sooner or later. The projection
+  // write is not naturally idempotent — a second apply would re-run it against whatever the row
+  // holds by then — so suppression has to come from the idempotency store the worker configures.
+  test("suppresses a redelivery of an event it has already applied", async () => {
+    await start();
+
+    const event = { shipmentId: "s-1", carrier: "dhl" };
+    await harness.emit("com.example.shipment.ready.v1", event, { id: "e-1", subject: "s-1" });
+    await harness.emit("com.example.shipment.ready.v1", event, { id: "e-1", subject: "s-1" });
+
+    expect(projection.applied).toHaveLength(1);
+    // Acked, not nacked: a duplicate is a success, and nacking one would redeliver it forever.
+    expect(harness.acked).toHaveLength(2);
+  });
+
   test("dead-letters a shipment id the payload never carried", async () => {
     await start();
 

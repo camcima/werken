@@ -17,5 +17,7 @@ const SHIPMENT_EVENT = avro.Type.forSchema(JSON.parse(DEFINITION) as avro.Schema
  * make the codec fail closed, which is what we want for anything unexpected.
  */
 export function readerTypeFor(schemaName: string): avro.Type | undefined {
-  return schemaName.endsWith("shipment-events") ? SHIPMENT_EVENT : undefined;
+  // The leading slash matters: a bare "shipment-events" suffix would also claim an unrelated
+  // `legacy-shipment-events` schema and decode it with the wrong reader type.
+  return schemaName.endsWith("/shipment-events") ? SHIPMENT_EVENT : undefined;
 }

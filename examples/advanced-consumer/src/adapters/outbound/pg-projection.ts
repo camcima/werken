@@ -13,13 +13,16 @@ export class PgShipmentProjection extends ShipmentProjection {
   }
 
   async apply(change: ProjectionChange): Promise<void> {
-    // Last-write-wins on the projection row. The idempotency store is what stops a redelivery
-    // re-applying an older event on top of a newer one.
+    // Latest-event-time wins, not latest-arrival. Two guards doing two different jobs: the
+    // idempotency store prevents re-applying *this* event; the `updated_at` guard is what prevents
+    // an older one. The store keys on {consumer, source, ce-id}, so it says nothing about a stale
+    // event arriving after a fresher one, and past `idempotency.ttlMs` even the same id can return.
     await this.pool.query(
       `INSERT INTO shipment_projection (shipment_id, status, carrier, updated_at)
        VALUES ($1, $2, $3, $4)
        ON CONFLICT (shipment_id) DO UPDATE
-         SET status = EXCLUDED.status, carrier = EXCLUDED.carrier, updated_at = EXCLUDED.updated_at`,
+         SET status = EXCLUDED.status, carrier = EXCLUDED.carrier, updated_at = EXCLUDED.updated_at
+         WHERE shipment_projection.updated_at <= EXCLUDED.updated_at`,
       [change.shipmentId, change.status, change.carrier ?? null, change.occurredAt],
     );
   }

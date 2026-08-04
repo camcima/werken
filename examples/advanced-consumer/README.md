@@ -29,3 +29,12 @@ pnpm --filter @werken/example-advanced-consumer start
 Then publish some events with [`../publisher`](../publisher) and watch `shipment_projection` fill.
 
 It fails at startup rather than degrading if `DATABASE_URL` is unset or the subscription is missing.
+
+## Pruning the idempotency table
+
+`provision` creates `werken_processed_events` from the same shape as
+[`../../docs/idempotency-schema.sql`](../../docs/idempotency-schema.sql), and nothing ever deletes
+from it. That is deliberate: the library runs no DDL and issues no DELETEs against your database, so
+pruning expired markers is the consumer's job. Schedule
+`DELETE FROM werken_processed_events WHERE expires_at < now();` — the exported `pruneExpiredSql()`
+returns that statement — or the table grows without bound.
