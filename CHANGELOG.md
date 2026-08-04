@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.0](https://github.com/camcima/werken/compare/v0.2.0...v0.3.0) (2026-08-04)
+
+### Features
+
+* **example:** add a publisher example ([f4e1b9a](https://github.com/camcima/werken/commit/f4e1b9a4994ad33665d8fe5edd06a010afdd8d5b))
+* **example:** add the advanced consumer's domain and routing ([f9ca337](https://github.com/camcima/werken/commit/f9ca337b7c62f9ebf78d0094f88fda1a5c6fa73c))
+* **example:** add the advanced consumer's Postgres adapters ([c97d906](https://github.com/camcima/werken/commit/c97d906d0494b46d3d5c133b08279bf73ffaace3))
+* **example:** wire the advanced consumer's transport and provisioning ([519de6a](https://github.com/camcima/werken/commit/519de6ae6b4a5314e2fbfedb52115a3fdf8586c0))
+
+### Bug Fixes
+
+* **example:** enable message ordering on the shipment subscription ([e9afee7](https://github.com/camcima/werken/commit/e9afee748542dca7cbf039924d19ab661fe3d987))
+* **example:** fail loudly on every missing env var, and await the worker ([b36948b](https://github.com/camcima/werken/commit/b36948b55f6ee5909095953a9304d30667f8d9c0)), references [#2](https://github.com/camcima/werken/issues/2)
+* **example:** guard the projection against out-of-order events ([ab3024f](https://github.com/camcima/werken/commit/ab3024f6fdab482419803f5f9213420cae34e6e1))
+* **release:** restrict publication to real packages ([e8cb214](https://github.com/camcima/werken/commit/e8cb214b90baa21b978754abfc22589e6bcade75))
+
 ## [0.2.0](https://github.com/camcima/werken/compare/v0.1.0...v0.2.0) (2026-08-04)
 
 ### ⚠ BREAKING CHANGES
