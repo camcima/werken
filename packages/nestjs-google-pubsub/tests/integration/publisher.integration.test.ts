@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { createEventPublisher, WerkenPubSubTransport } from "@werken/nestjs-google-pubsub";
 import type { CloudEventContext, PubSubClientLike } from "@werken/nestjs-google-pubsub";
 import { skipUnlessAvailable } from "@werken/test-support";
+import { resetPubSubFixtures, tidyPubSubFixtures } from "@werken/test-support/pubsub";
 
 const EMULATOR = process.env.PUBSUB_EMULATOR_HOST;
 const PROJECT = process.env.PUBSUB_PROJECT_ID ?? "werken-it";
@@ -27,15 +28,25 @@ const AVRO_TYPE = avro.Type.forSchema(SCHEMA as avro.Schema);
  * transport can read back what the publisher wrote, are contracts with the broker.
  */
 describe.skipIf(skipUnlessAvailable("PUBSUB_EMULATOR_HOST", EMULATOR))("publisher against the emulator", () => {
-  const suffix = Date.now();
-  const topicId = `werken-pub-topic-${suffix}`;
-  const subscriptionId = `werken-pub-sub-${suffix}`;
-  const schemaId = `werken-pub-schema-${suffix}`;
-  const schemaTopicId = `werken-pub-schema-topic-${suffix}`;
+  // Fixed, and specific to this file. See @werken/test-support/pubsub for why these are not
+  // suffixed per run and why beforeAll deletes before it creates.
+  const topicId = "werken-pub-topic";
+  const subscriptionId = "werken-pub-sub";
+  const schemaId = "werken-pub-schema";
+  const schemaTopicId = "werken-pub-schema-topic";
+  const fixtures = {
+    subscriptions: [subscriptionId],
+    topics: [topicId, schemaTopicId],
+    schemas: [schemaId],
+  };
   const pubsub = new PubSub({ projectId: PROJECT });
   let transport: WerkenPubSubTransport | undefined;
 
   beforeAll(async () => {
+    // The schema-attached topic in particular has to be rebuilt rather than reused: schemaSettings
+    // are fixed at creation, so a leftover topic would silently pin this suite to whatever schema
+    // an earlier revision of this file attached.
+    await resetPubSubFixtures(pubsub, fixtures);
     await pubsub.createTopic(topicId);
     await pubsub.topic(topicId).createSubscription(subscriptionId);
     await pubsub.createSchema(schemaId, SchemaTypes.Avro, JSON.stringify(SCHEMA));
@@ -47,20 +58,7 @@ describe.skipIf(skipUnlessAvailable("PUBSUB_EMULATOR_HOST", EMULATOR))("publishe
 
   afterAll(async () => {
     await transport?.close();
-    await pubsub
-      .subscription(subscriptionId)
-      .delete()
-      .catch(() => {});
-    for (const t of [topicId, schemaTopicId]) {
-      await pubsub
-        .topic(t)
-        .delete()
-        .catch(() => {});
-    }
-    await pubsub
-      .schema(schemaId)
-      .delete()
-      .catch(() => {});
+    await tidyPubSubFixtures(pubsub, fixtures);
     await pubsub.close();
   });
 

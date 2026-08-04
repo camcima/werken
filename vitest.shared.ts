@@ -31,6 +31,10 @@ export const shared = {
       {
         // Shared by both packages' and examples' integration suites. Aliased rather than imported
         // by relative path so a test does not have to know how deep it sits.
+        find: /^@werken\/test-support\/pubsub$/,
+        replacement: fromHere("./tests/support/pubsub-fixtures.ts"),
+      },
+      {
         find: /^@werken\/test-support$/,
         replacement: fromHere("./tests/support/requires.ts"),
       },

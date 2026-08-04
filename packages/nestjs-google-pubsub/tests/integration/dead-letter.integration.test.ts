@@ -4,6 +4,7 @@ import { toPubSubAttributes } from "@werken/cloudevents";
 import { DEAD_LETTER_ATTRIBUTES, TerminalEventError, WerkenPubSubTransport } from "@werken/nestjs-google-pubsub";
 import type { PubSubClientLike } from "@werken/nestjs-google-pubsub";
 import { skipUnlessAvailable } from "@werken/test-support";
+import { resetPubSubFixtures, tidyPubSubFixtures } from "@werken/test-support/pubsub";
 
 const EMULATOR = process.env.PUBSUB_EMULATOR_HOST;
 const PROJECT = process.env.PUBSUB_PROJECT_ID ?? "werken-it";
@@ -18,15 +19,24 @@ const TYPE = "com.example.terminal.v1";
  * are contracts with the broker.
  */
 describe.skipIf(skipUnlessAvailable("PUBSUB_EMULATOR_HOST", EMULATOR))("dead-lettering against the emulator", () => {
-  const suffix = Date.now();
-  const topicId = `werken-dl-src-${suffix}`;
-  const subscriptionId = `werken-dl-sub-${suffix}`;
-  const deadLetterTopicId = `werken-dl-dest-${suffix}`;
-  const deadLetterSubId = `werken-dl-dest-sub-${suffix}`;
+  // Fixed, and specific to this file. See @werken/test-support/pubsub for why these are not
+  // suffixed per run and why beforeAll deletes before it creates.
+  const topicId = "werken-dl-src";
+  const subscriptionId = "werken-dl-sub";
+  const deadLetterTopicId = "werken-dl-dest";
+  const deadLetterSubId = "werken-dl-dest-sub";
+  const fixtures = {
+    subscriptions: [subscriptionId, deadLetterSubId],
+    topics: [topicId, deadLetterTopicId],
+  };
   const pubsub = new PubSub({ projectId: PROJECT });
   let transport: WerkenPubSubTransport;
 
   beforeAll(async () => {
+    // Recreating the dead-letter subscription is what keeps the assertion honest: a leftover one
+    // still holds the previous run's dead letters, whose attributes are identical, so the test
+    // would pass on a message this run never produced.
+    await resetPubSubFixtures(pubsub, fixtures);
     await pubsub.createTopic(topicId);
     await pubsub.topic(topicId).createSubscription(subscriptionId);
     await pubsub.createTopic(deadLetterTopicId);
@@ -35,18 +45,7 @@ describe.skipIf(skipUnlessAvailable("PUBSUB_EMULATOR_HOST", EMULATOR))("dead-let
 
   afterAll(async () => {
     await transport?.close();
-    for (const s of [subscriptionId, deadLetterSubId]) {
-      await pubsub
-        .subscription(s)
-        .delete()
-        .catch(() => {});
-    }
-    for (const t of [topicId, deadLetterTopicId]) {
-      await pubsub
-        .topic(t)
-        .delete()
-        .catch(() => {});
-    }
+    await tidyPubSubFixtures(pubsub, fixtures);
     await pubsub.close();
   });
 

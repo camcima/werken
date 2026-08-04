@@ -4,6 +4,7 @@ import { PubSub } from "@google-cloud/pubsub";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { toPubSubAttributes } from "@werken/cloudevents";
 import { skipUnlessAvailable } from "@werken/test-support";
+import { resetPubSubFixtures, tidyPubSubFixtures } from "@werken/test-support/pubsub";
 
 const EMULATOR = process.env.PUBSUB_EMULATOR_HOST;
 const PROJECT = process.env.PUBSUB_PROJECT_ID ?? "werken-it";
@@ -17,25 +18,24 @@ const WORKER = fileURLToPath(new URL("./sigterm-worker.mjs", import.meta.url));
  * and the least likely thing to be caught by accident.
  */
 describe.skipIf(skipUnlessAvailable("PUBSUB_EMULATOR_HOST", EMULATOR))("SIGTERM mid-flight", () => {
-  const suffix = Date.now();
-  const topicId = `werken-sigterm-topic-${suffix}`;
-  const subscriptionId = `werken-sigterm-sub-${suffix}`;
+  // Fixed, and specific to this file. See @werken/test-support/pubsub for why these are not
+  // suffixed per run and why beforeAll deletes before it creates.
+  const topicId = "werken-sigterm-topic";
+  const subscriptionId = "werken-sigterm-sub";
+  const fixtures = { subscriptions: [subscriptionId], topics: [topicId] };
   const pubsub = new PubSub({ projectId: PROJECT });
 
   beforeAll(async () => {
+    // This suite is the one most likely to be interrupted, and the one most damaged by a leftover:
+    // the redelivery test asserts that a message comes back, and an unacked message from a previous
+    // run sitting in the same subscription would satisfy that without this run proving anything.
+    await resetPubSubFixtures(pubsub, fixtures);
     await pubsub.createTopic(topicId);
     await pubsub.topic(topicId).createSubscription(subscriptionId, { ackDeadlineSeconds: 60 });
   });
 
   afterAll(async () => {
-    await pubsub
-      .subscription(subscriptionId)
-      .delete()
-      .catch(() => {});
-    await pubsub
-      .topic(topicId)
-      .delete()
-      .catch(() => {});
+    await tidyPubSubFixtures(pubsub, fixtures);
     await pubsub.close();
   });
 
