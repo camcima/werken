@@ -2,7 +2,7 @@ import "reflect-metadata";
 import { NestFactory } from "@nestjs/core";
 import { Pool } from "pg";
 import { WerkenPubSubTransport } from "@werken/nestjs-google-pubsub";
-import { WorkerModule, requireDatabaseUrl } from "./worker.module.js";
+import { WorkerModule, requireDatabaseUrl, requireEnv } from "./worker.module.js";
 import { createPgExecutor } from "./adapters/outbound/pg-executor.js";
 import { readerTypeFor } from "./schema/reader-types.js";
 
@@ -20,8 +20,11 @@ async function bootstrap() {
   const pool = new Pool({ connectionString: requireDatabaseUrl() });
 
   const transport = new WerkenPubSubTransport({
-    projectId: process.env.GCP_PROJECT_ID!,
-    subscription: process.env.PUBSUB_SUBSCRIPTION!,
+    projectId: requireEnv("GCP_PROJECT_ID", "The GCP project holding the subscription."),
+    subscription: requireEnv(
+      "PUBSUB_SUBSCRIPTION",
+      "Run `pnpm --filter @werken/example-advanced-consumer provision` first.",
+    ),
     deadLetterTopic: process.env.PUBSUB_DEAD_LETTER_TOPIC,
 
     // Resolves the writer schema by revision and decodes into the reader type above. Strict by

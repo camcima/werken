@@ -36,16 +36,23 @@ export class WorkerModule {
 }
 
 /**
- * Fail loudly rather than degrading: a consumer that starts without a database looks healthy and
- * silently drops every projection write.
+ * Fail loudly rather than degrading. A `process.env.X!` only silences the compiler: at runtime the
+ * value is still `undefined`, so the consumer starts, subscribes to the literal string "undefined",
+ * reports healthy and receives nothing — the exact silent-misconfiguration failure this example
+ * exists to argue against.
  */
-export function requireDatabaseUrl(): string {
-  const url = process.env.DATABASE_URL;
-  if (url === undefined || url === "") {
-    throw new Error(
-      "werken example: DATABASE_URL is not set. Start Postgres with `docker compose up -d` and use " +
-        "postgresql://postgres:postgres@localhost:55432/werken_test",
-    );
+export function requireEnv(name: string, hint: string): string {
+  const value = process.env[name];
+  if (value === undefined || value === "") {
+    throw new Error(`werken example: ${name} is not set. ${hint}`);
   }
-  return url;
+  return value;
+}
+
+export function requireDatabaseUrl(): string {
+  return requireEnv(
+    "DATABASE_URL",
+    "Start Postgres with `docker compose up -d` and use " +
+      "postgresql://postgres:postgres@localhost:55432/werken_test",
+  );
 }

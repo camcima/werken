@@ -188,7 +188,17 @@ describe.skipIf(
       // through the same DI and the same pipeline.
       expect(["ready", "cancelled"]).toContain(rows.find((r) => r.shipment_id === "s-1")?.status);
     } finally {
+      // Awaited, not fire-and-forget: afterAll deletes the subscription this worker is still
+      // draining from, and an un-awaited kill leaks the process into later runs. SIGKILL after the
+      // drain budget so a wedged worker cannot hang the suite either.
       worker.kill("SIGTERM");
+      await new Promise<void>((resolve) => {
+        const forceKill = setTimeout(() => worker.kill("SIGKILL"), 35_000);
+        worker.on("exit", () => {
+          clearTimeout(forceKill);
+          resolve();
+        });
+      });
       await deadLetters.close();
     }
   }, 120_000);
