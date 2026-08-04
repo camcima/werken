@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { PubSub } from "@google-cloud/pubsub";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { DEAD_LETTER_ATTRIBUTES } from "@werken/nestjs-google-pubsub";
 import { skipUnlessAvailable } from "@werken/test-support";
 
 const run = promisify(execFile);
@@ -16,6 +17,7 @@ const PUBLISHER = fileURLToPath(new URL("../../../publisher/dist/main.js", impor
 const PROVISION = fileURLToPath(new URL("../../scripts/provision.mjs", import.meta.url));
 
 const TOPIC = "shipment-events";
+const DEAD_LETTER_TOPIC = "shipment-events-dead-letters";
 /** Matches `idempotency.consumer` in the example's `main.worker.ts`. */
 const CONSUMER_NAME = "shipment-projection";
 const MARKERS_SQL = "SELECT count(*)::int AS n FROM werken_processed_events WHERE consumer = $1";
@@ -35,6 +37,8 @@ describe.skipIf(
   const pool = new pg.Pool({ connectionString: DATABASE_URL });
   const pubsub = new PubSub({ projectId: PROJECT });
 
+  const suffix = Date.now();
+
   /**
    * Its own subscription per run, rather than the provisioned `shipment-projection`.
    *
@@ -45,7 +49,15 @@ describe.skipIf(
    * *previous* run's events. Draining a shared subscription for 25 runs turned up 75 stranded
    * messages, which is how that was found. A subscription deleted in afterAll cannot leak.
    */
-  const subscriptionId = `shipment-projection-it-${Date.now()}`;
+  const subscriptionId = `shipment-projection-it-${suffix}`;
+
+  /**
+   * Where anything the worker gives up on lands. Created here rather than in provision.mjs, and
+   * before the worker starts, because Pub/Sub fans a message out only to the subscriptions that
+   * already exist when it is published — a subscription attached afterwards sees nothing and would
+   * make "no dead letters" true by construction.
+   */
+  const deadLetterSubId = `shipment-dead-letters-it-${suffix}`;
 
   beforeAll(async () => {
     // Creates the schema, the schema-attached topic, the dead-letter topic and both tables — and
@@ -53,6 +65,7 @@ describe.skipIf(
     await run(process.execPath, [PROVISION], { env });
     // Ordering mirrors what provision.mjs gives the real subscription.
     await pubsub.topic(TOPIC).createSubscription(subscriptionId, { enableMessageOrdering: true });
+    await pubsub.topic(DEAD_LETTER_TOPIC).createSubscription(deadLetterSubId);
 
     await pool.query("DELETE FROM shipment_projection");
     // Scoped to this consumer, not a bare DELETE: `werken_processed_events` is the library's
@@ -62,35 +75,65 @@ describe.skipIf(
   }, 60_000);
 
   afterAll(async () => {
-    await pubsub
-      .subscription(subscriptionId)
-      .delete()
-      .catch(() => {});
+    for (const id of [subscriptionId, deadLetterSubId]) {
+      await pubsub
+        .subscription(id)
+        .delete()
+        .catch(() => {});
+    }
     await pubsub.close();
     await pool.end();
   });
 
   test("decodes Avro, projects rows, and records one dedup marker per event", async () => {
+    const deadLettered: string[] = [];
+    let subscriberError: unknown;
+    const deadLetters = pubsub.subscription(deadLetterSubId);
+    deadLetters.on("message", (m) => {
+      deadLettered.push(
+        `${m.attributes["ce-type"]} ${m.attributes["ce-subject"]}: ` +
+          `${m.attributes[DEAD_LETTER_ATTRIBUTES.stage]}/${m.attributes[DEAD_LETTER_ATTRIBUTES.reason]}`,
+      );
+      m.ack();
+    });
+    // Without this, a stream error arrives as an unhandled 'error' event and takes the whole run
+    // down with a stack trace that names neither this test nor the subscription.
+    deadLetters.on("error", (e) => (subscriberError = e));
+
     const worker = spawn(process.execPath, [CONSUMER], {
       env: {
         ...env,
         PUBSUB_SUBSCRIPTION: subscriptionId,
-        PUBSUB_DEAD_LETTER_TOPIC: "shipment-events-dead-letters",
+        PUBSUB_DEAD_LETTER_TOPIC: DEAD_LETTER_TOPIC,
         DATABASE_URL,
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
+    // Drained, not just piped: an unread pipe blocks the child once ~64 KB has accumulated in it,
+    // and the transcript is the only diagnostic there is when the worker fails to reach three
+    // markers.
+    let output = "";
+    worker.stdout.on("data", (chunk: Buffer) => (output += chunk.toString()));
+    worker.stderr.on("data", (chunk: Buffer) => (output += chunk.toString()));
 
     try {
       await run(process.execPath, [PUBLISHER], { env });
 
       // Waits on the dedup markers rather than on the row count, because two rows appear as soon
       // as any two of the three events land — including the state where s-1 is still `ready` and
-      // its cancellation is in flight. A marker is written only after its handler succeeded, so
-      // three of them mean all three events have been projected and nothing is outstanding.
+      // its cancellation is in flight. A marker is written once an event is retired, so three of
+      // them mean nothing is still outstanding and the projection has stopped moving.
+      //
+      // Retired is not the same as handled: pipeline.ts also records a marker for an event its
+      // handler dead-lettered, so that a redelivery cannot publish a second copy. The dead-letter
+      // assertion below is what tells the two apart.
       const deadline = Date.now() + 60_000;
       let processed = 0;
       while (Date.now() < deadline) {
+        // A worker that dies on startup — a bad DATABASE_URL, a subscription that is not there —
+        // would otherwise sit here for the full 60s and then report `expected 0 to be 3` with
+        // nothing to debug from.
+        if (worker.exitCode !== null) throw new Error(`worker exited early (${worker.exitCode}):\n${output}`);
         processed = (await pool.query<{ n: number }>(MARKERS_SQL, [CONSUMER_NAME])).rows[0].n;
         if (processed >= 3) break;
         await new Promise((r) => setTimeout(r, 250));
@@ -98,17 +141,42 @@ describe.skipIf(
 
       // One marker per published event proves the SQL store was really written and not bypassed —
       // the publisher sends exactly three, and this subscription carries nothing else.
-      expect(processed).toBe(3);
+      expect(processed, `worker output:\n${output}`).toBe(3);
+
+      // Nothing was given up on. A handler that throws TerminalEventError still retires its event
+      // and still leaves three markers, two projection rows and s-2 on `ready` — so every other
+      // assertion here passes while a third of the stream went to the dead-letter topic. The
+      // dead-letter publish completes before the marker that retires the message is written, and
+      // this subscription predates the worker, so anything dead-lettered is already in its backlog
+      // by the time the count reached three; the second is for the emulator's delivery hop only.
+      const quietUntil = Date.now() + 1_000;
+      while (Date.now() < quietUntil && deadLettered.length === 0) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(deadLettered).toEqual([]);
+      expect(subscriberError).toBeUndefined();
 
       const rows = (
-        await pool.query<{ shipment_id: string; status: string }>(
-          "SELECT shipment_id, status FROM shipment_projection ORDER BY shipment_id",
+        await pool.query<{ shipment_id: string; status: string; carrier: string | null }>(
+          "SELECT shipment_id, status, carrier FROM shipment_projection ORDER BY shipment_id",
         )
       ).rows;
 
       expect(rows.map((r) => r.shipment_id)).toEqual(["s-1", "s-2"]);
+      const s2 = rows.find((r) => r.shipment_id === "s-2");
       // Only one event ever touched s-2, so this is the wildcard route's output and nothing else's.
-      expect(rows.find((r) => r.shipment_id === "s-2")?.status).toBe("ready");
+      expect(s2?.status).toBe("ready");
+
+      // The only assertion here that Avro decoding actually happened. `carrier` is a nullable
+      // union, so the publisher puts it on the wire as Avro JSON — {"carrier":{"string":"ups"}},
+      // not {"carrier":"ups"} — and unwrapping it to a bare string is schema resolution's doing.
+      // A plain JSON.parse hands the handler the wrapper object, which node-postgres stringifies
+      // into the column as {"string":"ups"}. shipment_id and status are byte-identical under both
+      // paths, so without this line, deleting `schemaRegistry` from main.worker.ts leaves the
+      // whole suite green. s-2 rather than s-1 because exactly one event ever touches it, which
+      // makes the value deterministic on an emulator that does not enforce ordering-key
+      // back-pressure.
+      expect(s2?.carrier).toBe("ups");
 
       // Deliberately NOT asserted: that s-1 settles on `cancelled`. It does on real Pub/Sub, where
       // an ordering key admits one unacked message per key at a time, so the ready is fully
@@ -121,6 +189,7 @@ describe.skipIf(
       expect(["ready", "cancelled"]).toContain(rows.find((r) => r.shipment_id === "s-1")?.status);
     } finally {
       worker.kill("SIGTERM");
+      await deadLetters.close();
     }
   }, 120_000);
 });
