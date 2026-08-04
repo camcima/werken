@@ -3,7 +3,7 @@ import avro from "avsc";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { createEventPublisher, WerkenPubSubTransport } from "@werken/nestjs-google-pubsub";
 import type { CloudEventContext, PubSubClientLike } from "@werken/nestjs-google-pubsub";
-import { skipUnlessAvailable } from "./requires.js";
+import { skipUnlessAvailable } from "@werken/test-support";
 
 const EMULATOR = process.env.PUBSUB_EMULATOR_HOST;
 const PROJECT = process.env.PUBSUB_PROJECT_ID ?? "werken-it";

@@ -4,12 +4,12 @@ import { fileURLToPath } from "node:url";
 import { PubSub } from "@google-cloud/pubsub";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { toPubSubAttributes } from "@werken/cloudevents";
-import { skipUnlessAvailable } from "./requires.js";
+import { skipUnlessAvailable } from "@werken/test-support";
 
 const EMULATOR = process.env.PUBSUB_EMULATOR_HOST;
 const PROJECT = process.env.PUBSUB_PROJECT_ID ?? "werken-it";
 const TYPE = "com.example.shipment.ready.v1";
-const WORKER = fileURLToPath(new URL("../../../../examples/minimal-consumer/dist/main.worker.js", import.meta.url));
+const WORKER = fileURLToPath(new URL("../../dist/main.worker.js", import.meta.url));
 
 /**
  * The README calls examples/minimal-consumer a complete, runnable service, and its documented path

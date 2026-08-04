@@ -9,6 +9,12 @@
     },
     {
       "path": "examples/minimal-consumer"
+    },
+    {
+      "path": "examples/advanced-consumer"
+    },
+    {
+      "path": "examples/publisher"
     }
   ]
 }

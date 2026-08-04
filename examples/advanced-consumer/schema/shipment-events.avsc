@@ -1,0 +1,9 @@
+{
+  "type": "record",
+  "name": "ShipmentEvent",
+  "namespace": "com.example.shipment",
+  "fields": [
+    { "name": "shipmentId", "type": "string" },
+    { "name": "carrier", "type": ["null", "string"], "default": null }
+  ]
+}

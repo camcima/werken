@@ -14,3 +14,6 @@ docs/spikes/
 
 # Browser automation artifacts (playwright-cli snapshots and console logs)
 .playwright-cli/
+
+# Subagent-driven-development scratch: ledgers, briefs, review packages
+.superpowers/

@@ -980,7 +980,38 @@ policies, and a provisioning script for both examples."
 }
 ```
 
-`tsconfig.json` and `tsconfig.test.json`: identical to Task 3's, with `resolveJsonModule` omitted.
+`examples/publisher/tsconfig.json`:
+
+```json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"],
+  "references": [
+    {
+      "path": "../../packages/nestjs-google-pubsub"
+    }
+  ]
+}
+```
+
+`examples/publisher/tsconfig.test.json`:
+
+```json
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["src", "tests"],
+  "references": []
+}
+```
 
 - [ ] **Step 2: Write the failing test**
 

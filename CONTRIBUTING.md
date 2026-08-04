@@ -50,6 +50,9 @@ git push                  # review the changelog first
 pnpm run release:publish  # prompts, then tags, pushes, publishes and drafts the GitHub release
 ```
 
+Publication is restricted to `./packages/*`. Examples are private workspaces, but the filter is
+what actually prevents one being published if that flag is ever forgotten.
+
 `release:publish` is deliberately **not** run with `--ci`. That buys two things:
 
 - **It asks before acting.** release-it prompts before creating the tag, pushing it, and creating
@@ -94,10 +97,10 @@ Test-driven: write the failing test first.
 
 The suite is split in two, and each half runs in its own CI job:
 
-| Command                     | Covers                | Needs                  |
-| --------------------------- | --------------------- | ---------------------- |
-| `pnpm test`                 | unit tests            | nothing                |
-| `pnpm run test:integration` | the integration suite | `docker compose up -d` |
+| Command                     | Covers                                         | Needs                  |
+| --------------------------- | ---------------------------------------------- | ---------------------- |
+| `pnpm test`                 | unit tests                                     | nothing                |
+| `pnpm run test:integration` | the integration suite, including both examples | `docker compose up -d` |
 
 Neither command reports skipped tests, and that is deliberate. The two suites are separated by
 config — `vitest.config.ts` excludes `tests/integration/**`, and `vitest.integration.config.ts`

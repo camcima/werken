@@ -1,6 +1,11 @@
 #!/bin/sh
 # Publishes every public workspace package.
 #
+# The --filter allowlist is load-bearing: `pnpm -r publish` publishes every workspace that is not
+# marked private, so an example that forgets `"private": true` would be published to npm as a real
+# package — irreversibly. Restricting to ./packages/* makes that impossible by construction rather
+# than by every example remembering to opt out.
+#
 # Split out of .release-it.publish.json rather than inlined there because release-it interpolates
 # ${...} in hook strings as its own template variables, so shell parameter expansion cannot be used
 # in the hook itself.
@@ -18,7 +23,7 @@
 set -e
 
 if [ -n "$NPM_OTP" ]; then
-  exec pnpm -r publish --no-git-checks --otp "$NPM_OTP"
+  exec pnpm -r --filter "./packages/*" publish --no-git-checks --otp "$NPM_OTP"
 fi
 
-exec pnpm -r publish --no-git-checks
+exec pnpm -r --filter "./packages/*" publish --no-git-checks

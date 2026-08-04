@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { toPubSubAttributes } from "@werken/cloudevents";
 import { WerkenPubSubTransport } from "@werken/nestjs-google-pubsub";
 import type { PubSubClientLike } from "@werken/nestjs-google-pubsub";
-import { skipUnlessAvailable } from "./requires.js";
+import { skipUnlessAvailable } from "@werken/test-support";
 
 const EMULATOR = process.env.PUBSUB_EMULATOR_HOST;
 const PROJECT = process.env.PUBSUB_PROJECT_ID ?? "werken-it";

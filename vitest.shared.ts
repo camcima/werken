@@ -28,6 +28,12 @@ export const shared = {
         find: /^@werken\/nestjs-google-pubsub$/,
         replacement: fromHere("./packages/nestjs-google-pubsub/src/index.ts"),
       },
+      {
+        // Shared by both packages' and examples' integration suites. Aliased rather than imported
+        // by relative path so a test does not have to know how deep it sits.
+        find: /^@werken\/test-support$/,
+        replacement: fromHere("./tests/support/requires.ts"),
+      },
     ],
   },
   oxc: {
@@ -46,4 +52,4 @@ export const shared = {
 };
 
 /** Files owned by the integration run. Excluded from the unit run so neither reports skips. */
-export const INTEGRATION_GLOB = "packages/*/tests/integration/**/*.test.ts";
+export const INTEGRATION_GLOB = "{packages,examples}/*/tests/integration/**/*.test.ts";

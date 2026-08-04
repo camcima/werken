@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { PubSub } from "@google-cloud/pubsub";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { toPubSubAttributes } from "@werken/cloudevents";
-import { skipUnlessAvailable } from "./requires.js";
+import { skipUnlessAvailable } from "@werken/test-support";
 
 const EMULATOR = process.env.PUBSUB_EMULATOR_HOST;
 const PROJECT = process.env.PUBSUB_PROJECT_ID ?? "werken-it";
