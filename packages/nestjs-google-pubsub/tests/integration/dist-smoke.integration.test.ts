@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
-import { skipUnlessAvailable } from "./requires.js";
+import { skipUnlessAvailable } from "@werken/test-support";
 
 const run = promisify(execFile);
 const DIST = fileURLToPath(new URL("../../dist/index.js", import.meta.url));

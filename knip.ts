@@ -12,7 +12,8 @@ import type { KnipConfig } from "knip";
 const config: KnipConfig = {
   workspaces: {
     ".": {
-      project: ["*.ts"],
+      entry: ["tests/support/requires.ts"],
+      project: ["*.ts", "tests/**/*.ts"],
     },
 
     "packages/cloudevents": {
@@ -42,6 +43,9 @@ const config: KnipConfig = {
        */
       paths: {
         "@werken/nestjs-google-pubsub/internal": ["src/internal.ts"],
+        // Shared skip helper, aliased the same way in vitest.shared.ts. Without this Knip sees an
+        // import it cannot resolve to any installed package and reports it as an unlisted dependency.
+        "@werken/test-support": ["../../tests/support/requires.ts"],
       },
       /**
        * Optional on purpose. It is loaded lazily through `optionalRequire`, and every telemetry
@@ -55,6 +59,11 @@ const config: KnipConfig = {
     "examples/minimal-consumer": {
       entry: ["src/main.worker.ts"],
       project: ["src/**/*.ts", "tests/**/*.ts"],
+      // Shared skip helper, aliased the same way in vitest.shared.ts. Without this Knip sees an
+      // import it cannot resolve to any installed package and reports it as an unlisted dependency.
+      paths: {
+        "@werken/test-support": ["../../tests/support/requires.ts"],
+      },
     },
   },
 
