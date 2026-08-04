@@ -164,7 +164,13 @@ app.enableShutdownHooks();
 await app.listen();
 ```
 
-A complete, runnable service is in [`examples/minimal-consumer`](examples/minimal-consumer).
+Two runnable examples:
+
+- **[`examples/minimal-consumer`](examples/minimal-consumer)** — the smallest possible consumer. A
+  12-line handler with business logic only.
+- **[`examples/advanced-consumer`](examples/advanced-consumer)** — what a production consumer needs:
+  Avro schema resolution, Postgres idempotency, wildcard routing and dead-lettering. Paired with
+  **[`examples/publisher`](examples/publisher)** for the writing side.
 
 ## How it differs from Nest's own abstraction
 
@@ -246,12 +252,14 @@ Redrive tooling reads the attribute and restores order itself.
 
 ## Documentation
 
-| Guide                                                            | What it covers                                          |
-| ---------------------------------------------------------------- | ------------------------------------------------------- |
-| [Migrating an existing consumer](docs/migration.md)              | What to delete, and the one behaviour change that bites |
-| [Werken vs. Nest microservices](docs/vs-nestjs-microservices.md) | Every difference, with the source that proves it        |
-| [Idempotency schema](docs/idempotency-schema.sql)                | DDL for your own migration pipeline                     |
-| [Worked example](examples/minimal-consumer)                      | A 12-line handler with tests that need no GCP           |
+| Guide                                                            | What it covers                                               |
+| ---------------------------------------------------------------- | ------------------------------------------------------------ |
+| [Migrating an existing consumer](docs/migration.md)              | What to delete, and the one behaviour change that bites      |
+| [Werken vs. Nest microservices](docs/vs-nestjs-microservices.md) | Every difference, with the source that proves it             |
+| [Idempotency schema](docs/idempotency-schema.sql)                | DDL for your own migration pipeline                          |
+| [Worked example: minimal](examples/minimal-consumer)             | A 12-line handler with tests that need no GCP                |
+| [Worked example: advanced](examples/advanced-consumer)           | Avro, Postgres idempotency, wildcard routing, dead-lettering |
+| [Worked example: publisher](examples/publisher)                  | The writing side: `createEventPublisher`, ordering, batches  |
 
 ---
 

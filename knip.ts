@@ -65,6 +65,25 @@ const config: KnipConfig = {
         "@werken/test-support": ["../../tests/support/requires.ts"],
       },
     },
+
+    "examples/advanced-consumer": {
+      // Spawned by the integration test rather than imported.
+      entry: ["src/main.worker.ts", "scripts/provision.mjs"],
+      // scripts/**/*.mjs is here, not just in entry, because provision.mjs is also referenced by
+      // package.json's `provision` script and by the integration test — not imported from
+      // anywhere in the module graph — so Knip needs it in-project to resolve it at all.
+      project: ["src/**/*.ts", "tests/**/*.ts", "scripts/**/*.mjs"],
+      // Shared skip helper, aliased the same way in vitest.shared.ts. Without this Knip sees an
+      // import it cannot resolve to any installed package and reports it as an unlisted dependency.
+      paths: {
+        "@werken/test-support": ["../../tests/support/requires.ts"],
+      },
+    },
+
+    "examples/publisher": {
+      entry: ["src/main.ts"],
+      project: ["src/**/*.ts", "tests/**/*.ts"],
+    },
   },
 
   /**

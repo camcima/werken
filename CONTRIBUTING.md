@@ -97,10 +97,10 @@ Test-driven: write the failing test first.
 
 The suite is split in two, and each half runs in its own CI job:
 
-| Command                     | Covers                | Needs                  |
-| --------------------------- | --------------------- | ---------------------- |
-| `pnpm test`                 | unit tests            | nothing                |
-| `pnpm run test:integration` | the integration suite | `docker compose up -d` |
+| Command                     | Covers                                         | Needs                  |
+| --------------------------- | ---------------------------------------------- | ---------------------- |
+| `pnpm test`                 | unit tests                                     | nothing                |
+| `pnpm run test:integration` | the integration suite, including both examples | `docker compose up -d` |
 
 Neither command reports skipped tests, and that is deliberate. The two suites are separated by
 config — `vitest.config.ts` excludes `tests/integration/**`, and `vitest.integration.config.ts`
