@@ -23,7 +23,25 @@ await pubsub
   })
   .catch(ignoreExists);
 await pubsub.createTopic(DEAD_LETTER).catch(ignoreExists);
-await pubsub.topic(TOPIC).createSubscription(SUBSCRIPTION).catch(ignoreExists);
+
+// Ordering has to be enabled on the *subscription*, not just at publish time. The publisher sets
+// `ordering: true`, which makes `subject` the ordering key, but a subscription without this flag
+// still fans the two events for one shipment out concurrently — so a cancellation can be projected
+// before the ready that preceded it, and the ordering the example advertises is silently inert.
+await pubsub.topic(TOPIC).createSubscription(SUBSCRIPTION, { enableMessageOrdering: true }).catch(ignoreExists);
+
+// Checked rather than assumed, because `enableMessageOrdering` is create-only: Pub/Sub (and the
+// emulator) reject an update to it as immutable, so a subscription left over from before this flag
+// was set here would keep delivering out of order with nothing to show for it.
+const [metadata] = await pubsub.subscription(SUBSCRIPTION).getMetadata();
+if (metadata.enableMessageOrdering !== true) {
+  throw new Error(
+    `werken example: subscription ${SUBSCRIPTION} already exists without message ordering, and it ` +
+      "cannot be added to an existing subscription. Delete it and re-run this script — for the " +
+      "emulator, `docker compose down && docker compose up -d` is the quickest way.",
+  );
+}
+
 await pubsub.close();
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
