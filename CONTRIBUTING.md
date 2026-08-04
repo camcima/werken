@@ -29,14 +29,37 @@ Both lefthook and CI run these. `pnpm run <name>`:
 | `build`                  | Dual ESM + CJS compile via project references                             |
 | `lint`                   | ESLint, including a `no-restricted-imports` rule for Nest internals       |
 | `format:check`           | Prettier                                                                  |
-| `typecheck`              | Vitest typecheck pass                                                     |
+| `typecheck`              | `tsc` over src, tests, the example and the root configs                   |
 | `test` / `test:coverage` | Vitest; coverage target 80% project-wide                                  |
 | `lint:no-deep-imports`   | Acceptance criterion 11 — no `@nestjs/*/dist/*` or `/internal/*` imports  |
 | `lint:neutrality`        | Acceptance criterion 13 — no employer or domain nouns in `packages/*/src` |
+| `lint:dead-code`         | Knip — unused files, exports and dependencies across the workspace        |
 
 The last two exist because this library is meant to be handed to another team and reused unmodified.
 If a change seems to require the library to understand a domain concept, the design is wrong —
 raise it rather than adding the term to the denylist.
+
+## Dead code
+
+`pnpm run lint:dead-code` runs [Knip](https://knip.dev) over the whole workspace and fails on
+unused files, exports or dependencies. It is a **pre-push** gate rather than pre-commit: resolving
+the workspace graph is too slow to pay on every commit, and a symbol usually loses its last caller
+a commit or two before a branch is finished.
+
+It earns its place because the published API is deliberately narrow. Once `src/index.ts` stops
+re-exporting the engine, an internal symbol that loses its last caller becomes genuinely
+unreachable rather than "maybe someone imports it" — and nothing else notices. `tsc` does not
+report an unused export, and ESLint only ever sees one file at a time.
+
+Two things in `knip.ts` are worth knowing before you edit it:
+
+- **`src/internal.ts` is aliased, not an entry point.** It is absent from the package's `exports`
+  map, so only this repo's tests reach it, through a vitest alias. `knip.ts` teaches Knip the same
+  alias so the report is truthful. It is deliberately not registered as an entry, because an
+  entry's exports are exempt from the unused-export report — and a re-export there that no test
+  uses is exactly the dead code worth hearing about.
+- **The integration workers are entry points.** `dist-smoke-worker.*` and `sigterm-worker.mjs` are
+  spawned as child processes rather than imported, so nothing in the module graph points at them.
 
 ## Tests
 

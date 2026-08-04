@@ -8,6 +8,7 @@ import { AvroCodec } from "./schema/avro-codec.js";
 import { NoopIdempotencyStore, createSqlIdempotencyStore } from "./idempotency.js";
 import {
   DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS,
+  assertValidOptions,
   toSubscriberOptions,
   type PubSubClientLike,
   type SubscriptionLike,
@@ -63,8 +64,11 @@ export class WerkenPubSubTransport
       serviceName: options.telemetry?.serviceName ?? "werken",
     });
     // Built without a dead-letter publisher until listen() has a client to give it; terminal
-    // messages nack rather than being dropped in the meantime.
-    this.pipeline = this.buildPipeline(undefined);
+    // messages nack rather than being dropped in the meantime. The raw subscription name is
+    // provisional: resolving the prefix here would move an invalid-prefix error from startup to
+    // construction, and listen() replaces this pipeline with one naming the resolved subscription
+    // before any message can arrive.
+    this.pipeline = this.buildPipeline(options.subscription, undefined);
   }
 
   private buildCodec(client: PubSubClientLike): AvroCodec | undefined {
@@ -91,10 +95,14 @@ export class WerkenPubSubTransport
     });
   }
 
-  private buildPipeline(deadLetterPublisher: DeadLetterPublisher | undefined, codec?: AvroCodec): MessagePipeline {
+  private buildPipeline(
+    subscription: string,
+    deadLetterPublisher: DeadLetterPublisher | undefined,
+    codec?: AvroCodec,
+  ): MessagePipeline {
     return new MessagePipeline({
-      subscription: this.options.subscription,
-      resolveHandler: (type) => this.router?.resolve(type) ?? null,
+      subscription,
+      resolveRoute: (type) => this.router?.resolve(type) ?? null,
       deadLetterPublisher,
       codec,
       idempotencyStore: this.idempotencyStore,
@@ -115,6 +123,10 @@ export class WerkenPubSubTransport
   }
 
   private async start(): Promise<void> {
+    // Validated before anything connects, so a bad number fails here rather than as surprising SDK,
+    // timer or SQL behaviour much later.
+    assertValidOptions(this.options);
+
     const prefix = this.options.resourcePrefix;
     assertResourcePrefixSafe(prefix, this.options.allowUnsafeResourcePrefix === true, process.env.NODE_ENV);
 
@@ -143,7 +155,29 @@ export class WerkenPubSubTransport
 
     this.client = this.options.createClient?.(this.options) ?? this.createDefaultClient();
 
+    // Everything past the client's creation runs guarded: a failure here has already allocated SDK
+    // resources, and leaving them behind means a crash loop or a test suite stacks up gRPC
+    // channels, retry timers and credentials-backed clients.
+    try {
+      await this.startSubscribing(subscriptionName, deadLetterTopic, prefix);
+    } catch (error) {
+      await this.closePartialStartup();
+      throw error;
+    }
+  }
+
+  private async startSubscribing(
+    subscriptionName: string,
+    deadLetterTopic: string | undefined,
+    prefix: string | undefined,
+  ): Promise<void> {
+    if (this.client === undefined) throw new Error("werken: startup lost its client");
+
+    // The resolved name, not options.subscription: it is what CloudEventContext.subscription,
+    // telemetry labels and dead-letter provenance report, so all three name the resource that
+    // actually delivered the message.
     this.pipeline = this.buildPipeline(
+      subscriptionName,
       deadLetterTopic === undefined ? undefined : new PubSubDeadLetterPublisher(this.client, deadLetterTopic),
       this.buildCodec(this.client),
     );
@@ -169,7 +203,6 @@ export class WerkenPubSubTransport
     if (prefix !== undefined && prefix !== "" && this.subscription.exists !== undefined) {
       const [exists] = await this.subscription.exists();
       if (!exists) {
-        this.subscription = undefined;
         throw new Error(
           `werken: subscription ${JSON.stringify(subscriptionName)} does not exist in project ` +
             `${JSON.stringify(this.options.projectId)}. Scoped resources are not created by this library — ` +
@@ -197,6 +230,30 @@ export class WerkenPubSubTransport
    * `app.enableShutdownHooks()` in the consumer's bootstrap — without it, scale-down kills
    * in-flight work and produces duplicates on every event.
    */
+  /**
+   * Closes whatever startup managed to create before it failed, and clears the instance state so a
+   * later close() cannot double-close it.
+   *
+   * Close failures are swallowed deliberately: the startup error is the one the operator needs, and
+   * replacing it with "close failed" while unwinding would bury the actual cause.
+   */
+  private async closePartialStartup(): Promise<void> {
+    const { subscription, client } = this;
+    this.subscription = undefined;
+    this.client = undefined;
+
+    try {
+      await subscription?.close();
+    } catch {
+      /* startup already failed; that error is the one worth reporting */
+    }
+    try {
+      await client?.close();
+    } catch {
+      /* as above */
+    }
+  }
+
   async close(): Promise<void> {
     if (this.draining) return;
     this.draining = true;

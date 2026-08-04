@@ -9,7 +9,7 @@ import type { SchemaMessageMeta } from "./avro-codec.js";
  * path, which is otherwise pure and unit-testable without the SDK installed. This file is the
  * single place that knows the names, so if the SDK ever changes them, only this file moves.
  */
-export const SCHEMA_ATTRIBUTES = {
+const SCHEMA_ATTRIBUTES = {
   name: "googclient_schemaname",
   revision: "googclient_schemarevisionid",
   encoding: "googclient_schemaencoding",

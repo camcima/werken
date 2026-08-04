@@ -50,7 +50,14 @@ export interface WerkenTestHarnessOptions {
   readonly schemas?: "passthrough";
   /** Default `ce-source` for emitted events. */
   readonly source?: string;
-  /** Deterministic clock, for lateness and TTL assertions. */
+  /**
+   * Deterministic clock. Drives `ce-time` and the Pub/Sub publish time on emitted messages, and the
+   * default in-memory idempotency store, so advancing it past `idempotency.ttlMs` lets a test watch
+   * a processed marker expire.
+   *
+   * It does not drive event lateness: that is a telemetry histogram, and the harness deliberately
+   * surfaces no telemetry — assert lateness against a real Telemetry in a unit test instead.
+   */
   readonly now?: () => Date;
   /** Validation policies, so rejection behaviour can be asserted. */
   readonly validation?: WerkenTransportOptions["validation"];
@@ -92,19 +99,37 @@ export async function createWerkenTestHarness(options: WerkenTestHarnessOptions)
 
   const subscription = new InMemorySubscription();
   /**
-   * The message currently being processed, so a dead-letter publish can be attributed back to it.
-   * A single slot, which is sound because the harness drives one message at a time: `emit()` does
-   * not resolve until its message is settled. Emitting several without awaiting them would
-   * misattribute dead-letters.
+   * In-flight records, so a dead-letter publish can be attributed back to the message it came from.
+   *
+   * Correlated by identity rather than held in a single slot: `Promise.all` over several `emit()`
+   * calls is the natural way to test concurrent and duplicate delivery, and one slot would credit
+   * every dead-letter to whichever message was emitted last. The dead-lettered message carries the
+   * original attributes and body, which is enough to find its record.
+   *
+   * The value is a queue, so two genuinely indistinguishable messages — same ce-id, same body —
+   * still produce two records rather than one.
+   *
+   * JSON rather than a delimiter, for the same reason `idempotencyKeyToString` uses it: `ce-id` is
+   * producer-controlled and the body is arbitrary bytes, so any separator either could contain
+   * would let two different messages flatten to one key — the collision this map exists to avoid.
+   *
+   * No test demonstrates it. A collision currently resolves correctly anyway, because emits
+   * serialise, so the queue is shifted in the same order it was filled. This is defence against
+   * that ordering assumption changing, and consistency with the idempotency key encoding — not a
+   * fix for a reachable bug.
    */
-  let pending: HarnessRecord | undefined;
+  const inFlight = new Map<string, HarnessRecord[]>();
+  const correlationKey = (attributes: Record<string, string>, body: string) =>
+    JSON.stringify([attributes["ce-id"] ?? "", body]);
+
   const client: PubSubClientLike = {
     subscription: () => subscription,
     topic: () => ({
       publishMessage: async (published) => {
-        if (pending !== undefined) {
+        const record = inFlight.get(correlationKey(published.attributes, published.data.toString("utf8")))?.shift();
+        if (record !== undefined) {
           deadLettered.push({
-            ...pending,
+            ...record,
             reason: published.attributes["werken-dl-reason"],
             stage: published.attributes["werken-dl-stage"] as DeadLetterStage,
           });
@@ -129,7 +154,14 @@ export async function createWerkenTestHarness(options: WerkenTestHarnessOptions)
     deadLetterTopic: "werken-harness-dead-letters",
     validation: options.validation,
     onUnhandledPattern: options.onUnhandledPattern,
-    idempotency: options.idempotency ?? { store: new InMemoryIdempotencyStore(), consumer: "werken-harness" },
+    idempotency: {
+      // Given the harness clock, so a test can advance time past the TTL and watch a marker expire.
+      // Spread last so overriding just `ttlMs` or `consumer` keeps this store rather than silently
+      // dropping to the no-op one and disabling de-duplication.
+      store: new InMemoryIdempotencyStore({ now: () => now().getTime() }),
+      consumer: "werken-harness",
+      ...options.idempotency,
+    },
     createClient: () => client,
   });
 
@@ -139,13 +171,16 @@ export async function createWerkenTestHarness(options: WerkenTestHarnessOptions)
   await app.listen();
 
   let sequence = 0;
-  let drained = false;
+  let stopped: "drained" | "closed" | undefined;
 
   async function push(attributes: Record<string, string>, body: Buffer, extra: EmitOptions): Promise<void> {
-    // After drain() the transport has stopped listening, so the message would reach nothing and the
-    // promise below would never settle. A hung test tells you nothing; this says what you did.
-    if (drained) {
-      throw new Error("werken: harness has been drained — emit before calling drain(), or build a new harness");
+    // Once the transport has stopped listening the message would reach nothing and the promise
+    // below would never settle. A hung test tells you nothing; this says what you did.
+    if (stopped !== undefined) {
+      throw new Error(
+        `werken: harness has been ${stopped} — emit before calling ${stopped === "drained" ? "drain()" : "close()"}, ` +
+          "or build a new harness",
+      );
     }
 
     const record: HarnessRecord = {
@@ -155,7 +190,11 @@ export async function createWerkenTestHarness(options: WerkenTestHarnessOptions)
       body: body.toString("utf8"),
     };
 
-    pending = record;
+    const key = correlationKey(attributes, body.toString("utf8"));
+    const queue = inFlight.get(key);
+    if (queue === undefined) inFlight.set(key, [record]);
+    else queue.push(record);
+
     const settled = new Promise<void>((resolve) => {
       const message: IncomingMessage = {
         id: record.id,
@@ -208,11 +247,12 @@ export async function createWerkenTestHarness(options: WerkenTestHarnessOptions)
     },
 
     async drain() {
-      drained = true;
+      stopped = "drained";
       await transport.close();
     },
 
     async close() {
+      stopped ??= "closed";
       await app.close();
     },
   };

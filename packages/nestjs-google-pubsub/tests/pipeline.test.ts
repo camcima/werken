@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import { MessagePipeline } from "@werken/nestjs-google-pubsub";
+import { MessagePipeline } from "@werken/nestjs-google-pubsub/internal";
 import type { CloudEventContext, IncomingMessage } from "@werken/nestjs-google-pubsub";
 
 const TYPE = "com.example.thing.happened.v1";
@@ -26,7 +26,7 @@ function message(overrides: Partial<IncomingMessage> = {}): IncomingMessage {
 function pipelineWith(handlers: Record<string, (data: unknown, ctx: CloudEventContext) => unknown>) {
   return new MessagePipeline({
     subscription: "projects/p/subscriptions/s",
-    resolveHandler: (pattern) => handlers[pattern] ?? null,
+    resolveRoute: (type) => (handlers[type] === undefined ? null : { handler: handlers[type], pattern: type }),
   });
 }
 

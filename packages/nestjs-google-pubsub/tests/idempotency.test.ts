@@ -75,9 +75,12 @@ describe("NoopIdempotencyStore", () => {
   test("always reports a key as new, so every message is processed", async () => {
     const store = new NoopIdempotencyStore({ warn: () => {} });
 
-    expect(await store.tryRecord(key(), 60_000)).toBe(true);
-    expect(await store.tryRecord(key(), 60_000)).toBe(true);
-    expect(await store.has(key())).toBe(false);
+    // Called with no arguments because that is what the class declares: it ignores key, TTL and
+    // context by construction, and satisfies IdempotencyStore structurally. The port's full
+    // signature is exercised against real stores in pipeline-idempotency.test.ts.
+    expect(await store.tryRecord()).toBe(true);
+    expect(await store.tryRecord()).toBe(true);
+    expect(await store.has()).toBe(false);
   });
 });
 
@@ -116,5 +119,42 @@ describe("key identity", () => {
 
   test("is stable for the same key", () => {
     expect(idempotencyKeyToString(key())).toBe(idempotencyKeyToString(key()));
+  });
+});
+
+/**
+ * The flattened form is what stores with a single-column identity use — the documented Redis and
+ * MongoDB adapters, and the pipeline's own in-process coalescing map. Joining on an unescaped
+ * separator meant two different keys could flatten to one string, and the symptom is an event
+ * silently dropped as a duplicate rather than an error anyone would see.
+ */
+describe("flattened key encoding", () => {
+  /** The separator the old encoding used, unescaped. */
+  const SEP = String.fromCharCode(31);
+
+  test("does not collide when a field contains the separator", () => {
+    const a = idempotencyKeyToString({ consumer: `c${SEP}x`, source: "s", id: "i" });
+    const b = idempotencyKeyToString({ consumer: "c", source: `x${SEP}s`, id: "i" });
+
+    expect(a).not.toBe(b);
+  });
+
+  test("does not collide when the id contains the separator", () => {
+    const a = idempotencyKeyToString({ consumer: "c", source: "s", id: `i${SEP}j` });
+    const b = idempotencyKeyToString({ consumer: "c", source: `s${SEP}i`, id: "j" });
+
+    expect(a).not.toBe(b);
+  });
+
+  test("is stable for the same key", () => {
+    const key = { consumer: "c", source: "https://a.test", id: "e1" };
+
+    expect(idempotencyKeyToString(key)).toBe(idempotencyKeyToString({ ...key }));
+  });
+
+  test("still distinguishes keys that differ only in one field", () => {
+    expect(idempotencyKeyToString({ consumer: "a", source: "s", id: "i" })).not.toBe(
+      idempotencyKeyToString({ consumer: "b", source: "s", id: "i" }),
+    );
   });
 });

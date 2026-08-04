@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
-import { InMemoryIdempotencyStore, MessagePipeline, TerminalEventError } from "@werken/nestjs-google-pubsub";
+import { InMemoryIdempotencyStore, TerminalEventError } from "@werken/nestjs-google-pubsub";
+import { MessagePipeline } from "@werken/nestjs-google-pubsub/internal";
 import type { CloudEventContext, IdempotencyStore, IncomingMessage } from "@werken/nestjs-google-pubsub";
 
 const TYPE = "com.example.thing.happened.v1";
@@ -30,7 +31,7 @@ function pipelineWith(
 ) {
   return new MessagePipeline({
     subscription: "projects/p/subscriptions/s",
-    resolveHandler: (pattern) => handlers[pattern] ?? null,
+    resolveRoute: (type) => (handlers[type] === undefined ? null : { handler: handlers[type], pattern: type }),
     consumer: CONSUMER,
     ...extra,
   });
@@ -152,6 +153,42 @@ describe("store failures", () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
+  // has() said new and tryRecord() says already-present, so another replica recorded the event in
+  // between and this handler has just produced a duplicate side effect. Nothing can undo it, but it
+  // must not pass silently — that duplicate is the whole thing the store exists to prevent.
+  test("reports a duplicate that another consumer recorded first", async () => {
+    const store: IdempotencyStore = { has: async () => false, tryRecord: async () => false };
+    const warnings: string[] = [];
+    const handler = vi.fn();
+
+    const outcome = await pipelineWith(
+      { [TYPE]: handler },
+      {
+        idempotencyStore: store,
+        logger: { warn: (m: unknown) => void warnings.push(String(m)), error: () => {} },
+      },
+    ).handle(message());
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(outcome).toBe("ack");
+    expect(warnings.join("\n")).toMatch(/already recorded/);
+  });
+
+  test("says nothing when the record was written normally", async () => {
+    const store: IdempotencyStore = { has: async () => false, tryRecord: async () => true };
+    const warnings: string[] = [];
+
+    await pipelineWith(
+      { [TYPE]: vi.fn() },
+      {
+        idempotencyStore: store,
+        logger: { warn: (m: unknown) => void warnings.push(String(m)), error: () => {} },
+      },
+    ).handle(message());
+
+    expect(warnings).toEqual([]);
+  });
+
   test("still acks when recording fails after a successful handler", async () => {
     // The side effect already happened. Nacking would guarantee a duplicate; acking risks one only
     // if the store write was genuinely lost.
@@ -190,5 +227,40 @@ describe("concurrent duplicates", () => {
     expect(handler).toHaveBeenCalledTimes(1);
     expect(maxConcurrent).toBe(1);
     expect(outcomes).toEqual(["ack", "ack"]);
+  });
+
+  // Coalescing keys on ce-id and ce-source, so it must not run before those have been validated.
+  // Two malformed messages share the empty identity, and collapsing them would ack both while only
+  // one ever reached the dead-letter topic — the invalid-envelope policy promises each is kept.
+  test("dead-letters both of two concurrent malformed messages that share an empty identity", async () => {
+    const published: Array<{ id: string; body: string }> = [];
+    const pipeline = pipelineWith(
+      {},
+      {
+        idempotencyStore: new InMemoryIdempotencyStore(),
+        deadLetterPublisher: {
+          publish: async (request) => {
+            published.push({ id: request.message.id, body: request.message.data.toString("utf8") });
+          },
+        },
+      },
+    );
+    const malformed = (id: string, body: string) =>
+      message({
+        id,
+        data: Buffer.from(body),
+        attributes: { "ce-specversion": "1.0", "ce-id": "", "ce-source": "", "ce-type": TYPE },
+      });
+
+    const outcomes = await Promise.all([
+      pipeline.handle(malformed("pubsub-message-1", '{"first":true}')),
+      pipeline.handle(malformed("pubsub-message-2", '{"second":true}')),
+    ]);
+
+    expect(outcomes).toEqual(["dead-letter", "dead-letter"]);
+    expect(published).toEqual([
+      { id: "pubsub-message-1", body: '{"first":true}' },
+      { id: "pubsub-message-2", body: '{"second":true}' },
+    ]);
   });
 });

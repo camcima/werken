@@ -57,7 +57,8 @@ de-duplication, tracing, draining — happens around the handler.
 - **Outcome by return value** — `return` to ack, `throw` to nack and retry, `TerminalEventError` to
   dead-letter immediately without burning the retry budget.
 - **Explicit dead-lettering** — publishes to a topic you configure, preserving the original body and
-  attributes and adding provenance (reason, stage, source subscription, timestamp). Not the
+  attributes and adding provenance (reason, stage, source subscription, timestamp, structured
+  detail and the original ordering key). Not the
   subscription's retry policy, which only triggers after every retry is exhausted.
 - **Avro schema resolution** — fetches the _writer_ schema by revision from the Pub/Sub Schema
   Service and resolves it against your compiled _reader_ type. Cached by revision id, single-flight,
@@ -100,8 +101,9 @@ Everything else is optional and degrades sensibly: `ce-datacontenttype` defaults
 attribute is preserved verbatim on `ctx.extensions` rather than dropped.
 
 **Your payload is not constrained.** Werken parses the body as JSON, or decodes it as Avro when you
-configure `schemaRegistry` — and with your own `encode`, it can be any format you like. Producers do
-not restructure their events to adopt this; they set four attributes alongside them.
+configure `schemaRegistry` — and with your own `encode`, it can be any format you like, declared
+honestly: return `{ data, datacontenttype }` and the event says what the bytes actually are.
+Producers do not restructure their events to adopt this; they set four attributes alongside them.
 
 ### If a message arrives without an envelope
 
@@ -216,6 +218,32 @@ Two orderings in there are deliberate and worth knowing:
   between. Neither is eliminable — this is at-least-once — which is exactly why handlers must remain
   idempotent regardless.
 
+### What a dead-lettered message carries
+
+The original body and attributes, untouched, plus provenance:
+
+| Attribute                       | Value                                                       |
+| ------------------------------- | ----------------------------------------------------------- |
+| `werken-dl-reason`              | Why it was terminal                                         |
+| `werken-dl-stage`               | `envelope`, `decode`, `handler` or `unhandled`              |
+| `werken-dl-source-subscription` | The subscription it was read from, prefix already resolved  |
+| `werken-dl-timestamp`           | When it was dead-lettered, ISO 8601                         |
+| `werken-dl-detail`              | JSON of the `detail` a `TerminalEventError` carried, if any |
+| `werken-dl-ordering-key`        | The original ordering key, if it had one                    |
+
+`throw new TerminalEventError("unknown shipment", { shipmentId })` puts `{"shipmentId":"..."}` in
+`werken-dl-detail`, so the context you attached is there when you come to triage it.
+
+Two limits worth knowing. Pub/Sub caps an attribute at 1024 bytes, so detail larger than that is
+replaced by `{"truncated":true,"bytes":N}` — truncating JSON mid-string would leave something
+nothing can parse. Detail that cannot be serialised at all becomes `{"unserialisable":true,...}`.
+Neither ever fails the publish: losing the message is worse than losing its diagnostics.
+
+The ordering key is carried as **provenance, not as a live ordering key**. Republishing under a real
+one would require the dead-letter topic to be built with `messageOrdering` and would serialise
+dead-letter publishes per key — a slow path made slower exactly when things are already wrong.
+Redrive tooling reads the attribute and restores order itself.
+
 ## Documentation
 
 | Guide                                                            | What it covers                                          |
@@ -259,10 +287,16 @@ interface SqlExecutor {
 `RETURNING`, so that is the only thing an adapter ever has to report — for most drivers,
 `rows.length`.
 
-> **This is the one thing to get right.** The failure is silent, not loud. An adapter that always
-> returns `0` makes `tryRecord` report every message as already-processed and **drop all of them**,
-> and makes `has` report every message as new, disabling de-duplication. The snippets below were
-> checked against each driver's actual type definitions, not written from memory.
+> **This is the one thing to get right.** The failure is silent, not loud, and it goes both ways:
+>
+> - An adapter that always returns `0` makes `has` report every message as new, so **de-duplication
+>   is off** — every duplicate is reprocessed. `tryRecord` then reports every write as already
+>   present, so each message also logs a spurious duplicate warning.
+> - An adapter that always returns a **positive** count is the dangerous one: `has` reports every
+>   message as already processed, so every message is acked **without the handler ever running**.
+>
+> The snippets below were checked against each driver's actual type definitions, not written from
+> memory.
 
 ### Schema
 
@@ -565,6 +599,16 @@ Behaviour that matters:
 - **Bounded.** LRU plus TTL, so corrections get picked up.
 - **An unknown revision is normal**, not an error — a producer rolling out ahead of its consumers is
   the expected steady state. Logged at debug.
+- **`strict` covers one failure, not all of them.** It decides what happens when the writer schema
+  cannot be _fetched_ — a Schema Service outage, a client without schema support, a revision that has
+  not propagated. `strict: false` decodes the body as plain JSON in that case, trading correctness
+  for availability. It does **not** loosen anything else: a missing reader type, a definition that is
+  not valid Avro, and a writer the reader cannot resolve stay fatal whatever `strict` says, because
+  there the schema is known and the message still cannot be read correctly.
+- **Schema metadata is all-or-nothing.** Pub/Sub sets the schema name, revision and encoding
+  together or sets none of them, so a partial set is rejected rather than treated as an
+  unschematised topic, and an encoding that is neither `JSON` nor `BINARY` is rejected rather than
+  guessed at.
 
 > ⚠️ **Pub/Sub's `JSON` encoding is Avro JSON, not plain JSON.** A nullable union is
 > `{"string":"SCL"}`, not `"SCL"`, and plain JSON is _rejected_ outright by a schema-attached topic.
@@ -593,9 +637,12 @@ new WerkenPubSubTransport({
 ```
 
 With `WERKEN_RESOURCE_PREFIX=alice` that consumer subscribes to `alice-orders-consumer` and
-dead-letters to `alice-orders-dead-letters`. Set the same value on the publisher so both directions
-are scoped together — **a scoped consumer reading from an unscoped topic is worse than no scoping**,
-because it looks configured and receives nothing.
+dead-letters to `alice-orders-dead-letters`.
+
+The prefix is applied to whatever each side names — a consumer's `subscription` and
+`deadLetterTopic`, a publisher's resolved topic. Those are different resources, so scoping one side
+without deciding what the other does is how you get a consumer that looks configured and receives
+nothing. Pick one of the two topologies below; mixing them does not work.
 
 ### This is for shared development projects only
 
@@ -607,15 +654,19 @@ because it looks configured and receives nothing.
   mean it.
 - **It logs at WARN on startup**, naming the resolved resources. Silent name rewriting is exactly
   what costs an hour to diagnose when someone forgets the env var is set in their shell.
+- **The resolved name is what gets reported**, not the one you configured. `ctx.subscription`, the
+  `subscription` label on metrics, and the `werken-dl-source-subscription` provenance attribute all
+  read `alice-orders-consumer`, so diagnostics name the resource that actually delivered the message.
 - **Invalid prefixes fail at startup**, not at first publish, with the full resolved name in the
   error. Pub/Sub names must be 3-255 characters, start with a letter, avoid a leading `goog`, and
   use only letters, digits, `-`, `.`, `_`, `~`, `+` or `%`.
 
-### You must create the scoped resources yourself
+### Topology 1: shared topic, per-developer subscriptions
 
-**Werken never provisions topics or subscriptions** — that belongs in Terraform or your platform
-catalogue, in dev as much as in production. If the scoped subscription does not exist, startup fails
-naming the exact resource that is missing rather than sitting there healthy and idle:
+Prefix the **consumer only**, and leave `resourcePrefix` unset on the publisher so it keeps writing
+to the shared `orders`. Every developer's subscription hangs off that one topic, which is what lets
+each of them receive their own copy of the same events — including whatever a shared producer, or a
+teammate, publishes.
 
 ```bash
 PREFIX="$USER"
@@ -624,8 +675,32 @@ gcloud pubsub subscriptions create "$PREFIX-orders-consumer" \
   --topic orders --project "$GCP_PROJECT_ID"
 ```
 
-Note the subscription attaches to the **shared** `orders` topic, which is what lets every developer
-receive their own copy of the same published events.
+This is the usual choice: it solves the problem this section opened with — several developers
+stealing messages from one another's subscription — while keeping one shared stream of events.
+
+### Topology 2: fully isolated publisher and consumer
+
+Set the same prefix on **both** sides, and attach each scoped subscription to the **matching scoped
+topic**. A developer then sees only the events they published themselves, which is what you want for
+a test that must not be perturbed by anyone else's traffic.
+
+```bash
+PREFIX="$USER"
+gcloud pubsub topics create "$PREFIX-orders" "$PREFIX-orders-dead-letters" --project "$GCP_PROJECT_ID"
+gcloud pubsub subscriptions create "$PREFIX-orders-consumer" \
+  --topic "$PREFIX-orders" --project "$GCP_PROJECT_ID"
+```
+
+> **The failure mode both topologies exist to avoid** is a scoped subscription attached to a topic
+> nothing publishes to: a prefixed publisher writing to `alice-orders` while `alice-orders-consumer`
+> reads the shared `orders`, or the reverse. Neither errors. The consumer starts, reports healthy,
+> and receives nothing.
+
+### You must create the scoped resources yourself
+
+**Werken never provisions topics or subscriptions** — that belongs in Terraform or your platform
+catalogue, in dev as much as in production. If the scoped subscription does not exist, startup fails
+naming the exact resource that is missing rather than sitting there healthy and idle.
 
 ---
 
@@ -672,10 +747,47 @@ await publisher.publish({
 });
 ```
 
+`encode` returning bare bytes declares `application/json`, which is right for the Avro-JSON case
+above. For anything else, say so — otherwise a standards-aware consumer picks its decoder from a
+lie:
+
+```ts
+const publisher = createEventPublisher({
+  source: "https://example.com/orders",
+  client: new PubSub({ projectId }),
+  topicResolver: (type) => topicMap[type],
+  encode: (type, data) => ({
+    data: protobufFor(type).encode(data).finish(),
+    datacontenttype: "application/protobuf",
+  }),
+});
+```
+
 The publisher generates a time-ordered UUIDv7 `ce-id`, stamps `ce-time` and `ingestiontime`
-separately, lifts `traceparent` from the ambient OpenTelemetry context, derives the ordering key
-from `subject`, and resolves the destination topic from the event type. One `Topic` is built per
-destination and reused, so the SDK's own batching actually engages.
+separately, lifts `traceparent` from the ambient OpenTelemetry context, and resolves the destination
+topic from the event type. One `Topic` is built per destination and reused, so the SDK's own
+batching actually engages.
+
+### Ordering
+
+Ordering is **off** unless you ask for it. With `ordering: true` the publisher derives each message's
+ordering key from `subject` (an explicit `orderingKey` on the request still wins), and builds its
+`Topic` with `messageOrdering` — which the SDK requires, or it ignores the key entirely:
+
+```ts
+const publisher = createEventPublisher({
+  source: "https://example.com/orders",
+  client: new PubSub({ projectId }),
+  topicResolver: (type) => topicMap[type],
+  ordering: true, // without this, `subject` is not used as an ordering key
+});
+```
+
+Without `ordering: true`, `subject` is not used as an ordering key. An explicit `orderingKey` on the
+request is still handed to the SDK, but the `Topic` was not built with `messageOrdering`, so nothing
+orders on it — and the publish succeeds all the same, with no error to notice. Ordering also needs
+message ordering enabled on the **subscription**, which is a broker-side setting Werken does not
+manage.
 
 ### Batches
 
@@ -708,18 +820,43 @@ try {
 
 ## Observability
 
-One `CONSUMER` span per message named `{ce-type} process`, continuing the producer's trace from
-`ce-traceparent`, with child spans for decode and handler.
+One `CONSUMER` span named `{subscription} process`, continuing the producer's trace from
+`ce-traceparent`, with child spans for decode and handler. The event type is on the span as the
+`cloudevents.event_type` attribute rather than in its name, because a span name is a
+low-cardinality aggregation key and `ce-type` is producer-controlled.
 
-| Metric                     | Type            | Labels                 |
-| -------------------------- | --------------- | ---------------------- |
-| `werken.messages.received` | counter         | `type`, `subscription` |
-| `werken.messages.outcome`  | counter         | `type`, `outcome`      |
-| `werken.handler.duration`  | histogram       | `type`                 |
-| `werken.decode.failures`   | counter         | `type`, `reason`       |
-| `werken.schema.cache`      | counter         | `result`               |
-| `werken.messages.inflight` | up-down counter | `subscription`         |
-| `werken.event.lateness`    | histogram       | `type`                 |
+The coverage rule is simple: **a span for every message with a valid envelope, a metric for every
+message.**
+
+- **A message no handler matches** gets both. That is contract drift, and a span joining the
+  producer's trace is how it gets noticed rather than silently acked.
+- **An invalid envelope** gets metrics but no span: there is no envelope to trust, so nothing to
+  parent a span on. It also shows up in the logs and, by default, in the dead-letter topic.
+
+| Metric                     | Type            | Labels                  |
+| -------------------------- | --------------- | ----------------------- |
+| `werken.messages.received` | counter         | `route`, `subscription` |
+| `werken.messages.outcome`  | counter         | `route`, `outcome`      |
+| `werken.handler.duration`  | histogram       | `route`                 |
+| `werken.decode.failures`   | counter         | `route`, `reason`       |
+| `werken.schema.cache`      | counter         | `result`                |
+| `werken.messages.inflight` | up-down counter | `subscription`          |
+| `werken.event.lateness`    | histogram       | `route`                 |
+
+### Why `route` and not `ce-type`
+
+`route` is the **pattern you registered** — `com.example.order.*`, or the exact type for an exact
+registration. `ce-type` is chosen by the producer, and a wildcard route matches an open-ended set of
+them, so labelling on it lets one misbehaving or dynamic producer mint unbounded metric series and
+drive up your observability bill. Two bounded sentinels cover the rest:
+
+| `route`       | Meaning                                           |
+| ------------- | ------------------------------------------------- |
+| `<unmatched>` | Valid envelope, but no registered pattern matched |
+| `<invalid>`   | The envelope failed validation                    |
+
+If you need per-type breakdown, take it from the span attribute, where high cardinality is expected
+and priced accordingly.
 
 `werken.event.lateness` (`now - ce-time`, in seconds) is deliberately included: for events that
 routinely arrive long after they happened, the distribution of lateness is an operational signal in
@@ -730,6 +867,35 @@ Every pipeline log line carries `ce-id`, `ce-type`, `ce-source`, `ce-subject`, `
 
 > Spans only propagate if a `ContextManager` is registered — the OpenTelemetry Node SDK does this for
 > you. Without one, `context.active()` always returns root and child spans come out unparented.
+
+## Public API
+
+Everything below is exported from `@werken/nestjs-google-pubsub`, documented here, and covered by
+semver. The test harness is at `@werken/nestjs-google-pubsub/testing`.
+
+| Consuming                                                          | Publishing                         | Dead-lettering                         | Idempotency                                                              |
+| ------------------------------------------------------------------ | ---------------------------------- | -------------------------------------- | ------------------------------------------------------------------------ |
+| `WerkenPubSubTransport`                                            | `createEventPublisher`             | `TerminalEventError`                   | `createSqlIdempotencyStore`                                              |
+| `WerkenTransportOptions`                                           | `EventPublisherOptions`            | `PubSubDeadLetterPublisher`            | `InMemoryIdempotencyStore`, `NoopIdempotencyStore`                       |
+| `CloudEventContext`, `IncomingMessage`                             | `PublishRequest`, `PublishOptions` | `DeadLetterPublisher`                  | `IdempotencyStore`, `IdempotencyKey`                                     |
+| `EventHandler`, `Outcome`, `RejectionPolicy`                       | `EncodedPayload`                   | `DeadLetterRequest`, `DeadLetterStage` | `SqlExecutor`, `SqlIdempotencyStoreOptions`                              |
+| `ValidationOptions`, `FlowControlOptions`, `SchemaRegistryOptions` | `PartialPublishError`              | `DEAD_LETTER_ATTRIBUTES`               | `idempotencyKeyToString`, `pruneExpiredSql`, `DEFAULT_IDEMPOTENCY_TABLE` |
+
+Plus the errors worth catching by type — `SchemaDecodeError`, `ResourcePrefixError`,
+`InvalidPatternError`, `AmbiguousPatternError` — and the structural SDK types you need only if you
+supply your own `createClient` or dead-letter publisher: `PubSubClientLike`, `SubscriptionLike`,
+`TopicLike`, `SchemaLike`.
+
+**What is deliberately not exported.** The engine — the message pipeline, pattern router, Avro
+codec, schema revision cache, telemetry facade, context builder and resource-name helpers. They are
+in `src/internal.ts`, which is absent from the package's `exports` map, so Node refuses to resolve
+`@werken/nestjs-google-pubsub/internal` from an installed copy (`ERR_PACKAGE_PATH_NOT_EXPORTED`) —
+this repo's own tests reach it through a build-time alias.
+
+That is a deliberate 0.x decision. A published surface nothing documents is one nobody can change
+safely, and it is cheaper to widen later than to narrow after people depend on it. If you need
+something that is not here, open an issue and it gets exported with documentation and a test rather
+than by accident.
 
 ## Contributing
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { parseEnvelope } from "@werken/cloudevents";
-import { buildContext } from "@werken/nestjs-google-pubsub";
+import { buildContext } from "@werken/nestjs-google-pubsub/internal";
 import type { IncomingMessage } from "@werken/nestjs-google-pubsub";
 
 const attributes = {

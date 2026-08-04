@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
-import { MessagePipeline, TerminalEventError } from "@werken/nestjs-google-pubsub";
+import { TerminalEventError } from "@werken/nestjs-google-pubsub";
+import { MessagePipeline } from "@werken/nestjs-google-pubsub/internal";
 import type { CloudEventContext, DeadLetterRequest, IncomingMessage } from "@werken/nestjs-google-pubsub";
 
 const TYPE = "com.example.thing.happened.v1";
@@ -43,7 +44,7 @@ function pipelineWith(
 ) {
   return new MessagePipeline({
     subscription: SUBSCRIPTION,
-    resolveHandler: (pattern) => handlers[pattern] ?? null,
+    resolveRoute: (type) => (handlers[type] === undefined ? null : { handler: handlers[type], pattern: type }),
     ...extra,
   });
 }

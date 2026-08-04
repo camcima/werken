@@ -1,7 +1,10 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, test, vi } from "vitest";
-import { WerkenPubSubTransport, toSubscriberOptions } from "@werken/nestjs-google-pubsub";
+import { WerkenPubSubTransport } from "@werken/nestjs-google-pubsub";
+import { toSubscriberOptions } from "@werken/nestjs-google-pubsub/internal";
 import type { IncomingMessage } from "@werken/nestjs-google-pubsub";
+// Type-only: the test imports the value dynamically on purpose, and that binding is not a type.
+import type { Duration as SdkDuration } from "@google-cloud/pubsub";
 
 /** listen() completes asynchronously — the callback is how Nest learns the transport is ready. */
 const listenReady = (transport: WerkenPubSubTransport) =>
@@ -125,7 +128,7 @@ describe("toSubscriberOptions", () => {
     const passed = subscriptionOptions[0] as { minAckDeadline: unknown; maxExtensionTime: unknown };
     expect(passed.minAckDeadline).toBeInstanceOf(Duration);
     expect(passed.maxExtensionTime).toBeInstanceOf(Duration);
-    expect((passed.minAckDeadline as InstanceType<typeof Duration>).total("millisecond")).toBe(45_000);
+    expect((passed.minAckDeadline as SdkDuration).total("millisecond")).toBe(45_000);
   });
 });
 

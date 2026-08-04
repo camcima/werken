@@ -9,7 +9,7 @@ import {
 } from "@opentelemetry/sdk-metrics";
 import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { createTelemetry } from "@werken/nestjs-google-pubsub";
+import { createTelemetry } from "@werken/nestjs-google-pubsub/internal";
 
 /**
  * Asserted against the real OpenTelemetry SDK with in-memory exporters, not a hand-rolled fake.
@@ -45,6 +45,9 @@ afterEach(async () => {
   await meterProvider.shutdown();
 });
 
+/** The registered pattern that matched — what metrics and the span attribute label on. */
+const ROUTE = "com.example.thing.*";
+
 const envelope = {
   id: "01931b7c-3f2a-7000-8000-000000000001",
   type: "com.example.thing.happened.v1",
@@ -63,19 +66,21 @@ async function collect() {
 }
 
 describe("consumer span", () => {
-  test("records one CONSUMER span named after the event type", async () => {
+  // Named for the subscription, not ce-type: a span name is a low-cardinality aggregation key and
+  // ce-type is producer-controlled. The type is still on the span as an attribute.
+  test("records one CONSUMER span named after the subscription", async () => {
     const t = telemetry();
-    await t.withMessageSpan({ envelope, subscription: "orders-sub", messageId: "m1" }, async () => "ack");
+    await t.withMessageSpan({ envelope, subscription: "orders-sub", messageId: "m1", route: ROUTE }, async () => "ack");
 
     const spans = spanExporter.getFinishedSpans();
     expect(spans).toHaveLength(1);
-    expect(spans[0].name).toBe(`${envelope.type} process`);
+    expect(spans[0].name).toBe("orders-sub process");
     expect(spans[0].kind).toBe(4); // SpanKind.CONSUMER
   });
 
   test("carries the messaging and cloudevents attributes", async () => {
     const t = telemetry();
-    await t.withMessageSpan({ envelope, subscription: "orders-sub", messageId: "m1" }, async () => "ack");
+    await t.withMessageSpan({ envelope, subscription: "orders-sub", messageId: "m1", route: ROUTE }, async () => "ack");
 
     const attributes = spanExporter.getFinishedSpans()[0].attributes;
     expect(attributes["messaging.system"]).toBe("gcp_pubsub");
@@ -93,7 +98,7 @@ describe("consumer span", () => {
     const traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
 
     await t.withMessageSpan(
-      { envelope: { ...envelope, traceparent }, subscription: "orders-sub", messageId: "m1" },
+      { envelope: { ...envelope, traceparent }, subscription: "orders-sub", messageId: "m1", route: ROUTE },
       async () => "ack",
     );
 
@@ -112,6 +117,7 @@ describe("consumer span", () => {
         envelope: { ...envelope, traceparent, tracestate: "vendor=t61rcWkgMzE" },
         subscription: "orders-sub",
         messageId: "m1",
+        route: ROUTE,
       },
       async () => "ack",
     );
@@ -121,7 +127,7 @@ describe("consumer span", () => {
 
   test("starts a fresh trace when the producer sent no traceparent", async () => {
     const t = telemetry();
-    await t.withMessageSpan({ envelope, subscription: "orders-sub", messageId: "m1" }, async () => "ack");
+    await t.withMessageSpan({ envelope, subscription: "orders-sub", messageId: "m1", route: ROUTE }, async () => "ack");
 
     expect(spanExporter.getFinishedSpans()[0].spanContext().traceId).toMatch(/^[0-9a-f]{32}$/);
   });
@@ -129,7 +135,7 @@ describe("consumer span", () => {
   test("marks the span as errored when the handler throws", async () => {
     const t = telemetry();
     await expect(
-      t.withMessageSpan({ envelope, subscription: "orders-sub", messageId: "m1" }, async () => {
+      t.withMessageSpan({ envelope, subscription: "orders-sub", messageId: "m1", route: ROUTE }, async () => {
         throw new Error("handler blew up");
       }),
     ).rejects.toThrow("handler blew up");
@@ -141,14 +147,17 @@ describe("consumer span", () => {
 
   test("records the outcome on the span", async () => {
     const t = telemetry();
-    await t.withMessageSpan({ envelope, subscription: "orders-sub", messageId: "m1" }, async () => "dead-letter");
+    await t.withMessageSpan(
+      { envelope, subscription: "orders-sub", messageId: "m1", route: ROUTE },
+      async () => "dead-letter",
+    );
 
     expect(spanExporter.getFinishedSpans()[0].attributes["werken.outcome"]).toBe("dead-letter");
   });
 
   test("nests child spans under the message span", async () => {
     const t = telemetry();
-    await t.withMessageSpan({ envelope, subscription: "orders-sub", messageId: "m1" }, async () => {
+    await t.withMessageSpan({ envelope, subscription: "orders-sub", messageId: "m1", route: ROUTE }, async () => {
       await t.withChildSpan("werken.decode", async () => undefined);
       return "ack";
     });
@@ -161,14 +170,14 @@ describe("consumer span", () => {
 });
 
 describe("metrics", () => {
-  test("counts received messages by type and subscription", async () => {
+  test("counts received messages by route and subscription", async () => {
     const t = telemetry();
-    t.recordReceived(envelope.type, "orders-sub");
-    t.recordReceived(envelope.type, "orders-sub");
+    t.recordReceived(ROUTE, "orders-sub");
+    t.recordReceived(ROUTE, "orders-sub");
 
     const metric = (await collect())("werken.messages.received");
     expect(metric?.dataPoints[0].value).toBe(2);
-    expect(metric?.dataPoints[0].attributes).toMatchObject({ type: envelope.type, subscription: "orders-sub" });
+    expect(metric?.dataPoints[0].attributes).toMatchObject({ route: ROUTE, subscription: "orders-sub" });
   });
 
   test("counts outcomes separately", async () => {
@@ -233,7 +242,10 @@ describe("when telemetry is disabled", () => {
   test("records nothing and still runs the work", async () => {
     const t = createTelemetry({ enabled: false, serviceName: "orders", meterProvider });
 
-    const result = await t.withMessageSpan({ envelope, subscription: "s", messageId: "m1" }, async () => "ack");
+    const result = await t.withMessageSpan(
+      { envelope, subscription: "s", messageId: "m1", route: ROUTE },
+      async () => "ack",
+    );
 
     expect(result).toBe("ack");
     expect(spanExporter.getFinishedSpans()).toHaveLength(0);
@@ -243,7 +255,7 @@ describe("when telemetry is disabled", () => {
     const t = createTelemetry({ enabled: false, serviceName: "orders", meterProvider });
 
     await expect(
-      t.withMessageSpan({ envelope, subscription: "s", messageId: "m1" }, async () => {
+      t.withMessageSpan({ envelope, subscription: "s", messageId: "m1", route: ROUTE }, async () => {
         throw new Error("boom");
       }),
     ).rejects.toThrow("boom");
@@ -255,7 +267,7 @@ describe("active context", () => {
     const t = telemetry();
     let seenTraceId: string | undefined;
 
-    await t.withMessageSpan({ envelope, subscription: "s", messageId: "m1" }, async () => {
+    await t.withMessageSpan({ envelope, subscription: "s", messageId: "m1", route: ROUTE }, async () => {
       seenTraceId = trace.getSpan(context.active())?.spanContext().traceId;
       return "ack";
     });

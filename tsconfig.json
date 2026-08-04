@@ -6,6 +6,9 @@
     },
     {
       "path": "packages/nestjs-google-pubsub"
+    },
+    {
+      "path": "examples/minimal-consumer"
     }
   ]
 }

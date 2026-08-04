@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { AmbiguousPatternError, InvalidPatternError, PatternRouter } from "@werken/nestjs-google-pubsub";
+import { AmbiguousPatternError, InvalidPatternError } from "@werken/nestjs-google-pubsub";
+import { PatternRouter } from "@werken/nestjs-google-pubsub/internal";
 
 const handler = (name: string) => ({ name }) as unknown as () => void;
 
@@ -7,7 +8,10 @@ function router(patterns: Record<string, unknown>) {
   return new PatternRouter(Object.entries(patterns) as Array<[string, () => void]>);
 }
 
-const nameOf = (h: unknown) => (h as { name?: string } | null)?.name;
+const nameOf = (route: unknown) => (route as { handler: { name?: string } } | null)?.handler?.name;
+
+/** The matched pattern is what telemetry labels on, so resolve() has to report it. */
+const patternOf = (route: unknown) => (route as { pattern?: string } | null)?.pattern;
 
 describe("exact patterns", () => {
   test("routes an exact match", () => {
@@ -145,6 +149,26 @@ describe("pattern validation", () => {
   });
 });
 
+describe("the matched pattern", () => {
+  test("reports the registered pattern, not the type that matched it", () => {
+    const r = router({ "com.example.*": handler("wild") });
+
+    expect(patternOf(r.resolve("com.example.thing.happened.v1"))).toBe("com.example.*");
+  });
+
+  test("reports the type itself for an exact registration", () => {
+    const r = router({ "com.example.thing.v1": handler("exact") });
+
+    expect(patternOf(r.resolve("com.example.thing.v1"))).toBe("com.example.thing.v1");
+  });
+
+  test("reports the catch-all as its own pattern", () => {
+    const r = router({ "*": handler("all") });
+
+    expect(patternOf(r.resolve("literally.anything"))).toBe("*");
+  });
+});
+
 describe("lookup caching", () => {
   // Build the resolved map once; patterns must not be re-scanned for every message.
   test("resolves a repeated type without rescanning", () => {
@@ -189,5 +213,39 @@ describe("lookup caching", () => {
     expect(nameOf(r.resolve("com.example.thing.v1"))).toBe("exact");
     expect(nameOf(r.resolve("com.example.something.else"))).toBe("wild");
     expect(r.resolve("org.unmatched")).toBeNull();
+  });
+});
+
+/**
+ * Nest represents two @EventPattern handlers for one pattern as a linked list, which
+ * assertNotChained already catches. A caller constructing PatternRouter directly gets no such
+ * marker: duplicate exact entries silently overwrote one another, and duplicate wildcards silently
+ * kept the first. Either way a handler registered in good faith never runs.
+ */
+describe("duplicate entries passed directly", () => {
+  const entries = (pattern: string) =>
+    [
+      [pattern, handler("first")],
+      [pattern, handler("second")],
+    ] as Array<[string, () => void]>;
+
+  test("rejects two exact entries for the same pattern", () => {
+    expect(() => new PatternRouter(entries("com.example.thing.v1"))).toThrow(AmbiguousPatternError);
+  });
+
+  test("rejects two wildcard entries for the same pattern", () => {
+    expect(() => new PatternRouter(entries("com.example.*"))).toThrow(AmbiguousPatternError);
+  });
+
+  test("rejects two catch-all entries", () => {
+    expect(() => new PatternRouter(entries("*"))).toThrow(AmbiguousPatternError);
+  });
+
+  test("names the duplicated pattern", () => {
+    expect(() => new PatternRouter(entries("com.example.thing.v1"))).toThrow(/com\.example\.thing\.v1/);
+  });
+
+  test("still allows distinct patterns that overlap", () => {
+    expect(() => router({ "com.example.thing.v1": handler("exact"), "com.example.*": handler("wild") })).not.toThrow();
   });
 });

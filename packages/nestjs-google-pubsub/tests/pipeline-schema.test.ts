@@ -1,6 +1,6 @@
 import avro from "avsc";
 import { describe, expect, test, vi } from "vitest";
-import { AvroCodec, MessagePipeline } from "@werken/nestjs-google-pubsub";
+import { AvroCodec, MessagePipeline } from "@werken/nestjs-google-pubsub/internal";
 import type { CloudEventContext, DeadLetterRequest, IncomingMessage } from "@werken/nestjs-google-pubsub";
 
 const TYPE = "com.example.thing.happened.v1";
@@ -55,7 +55,7 @@ function pipelineWith(
 ) {
   return new MessagePipeline({
     subscription: "projects/p/subscriptions/s",
-    resolveHandler: (pattern) => handlers[pattern] ?? null,
+    resolveRoute: (type) => (handlers[type] === undefined ? null : { handler: handlers[type], pattern: type }),
     ...extra,
   });
 }

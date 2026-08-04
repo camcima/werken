@@ -29,7 +29,15 @@ export interface SchemaRegistryOptions {
    * registry. Returning undefined means the consumer cannot read that schema at all.
    */
   readerTypeFor: (schemaName: string) => avro.Type | undefined;
-  /** Fail closed if a writer schema cannot be fetched. Default true. */
+  /**
+   * Fail closed if a writer schema cannot be *fetched* — a Schema Service outage, a client without
+   * schema support, a revision that has not propagated. Default true.
+   *
+   * `false` trades correctness for availability on that one failure only, decoding the body as
+   * plain JSON instead. It does not loosen anything else: a missing reader type, a definition that
+   * is not valid Avro, a writer the reader cannot resolve, and incoherent schema metadata all stay
+   * fatal, because there the schema is known and the message still cannot be read correctly.
+   */
   strict?: boolean;
   /** Default 1 hour. */
   cacheTtlMs?: number;
@@ -167,15 +175,15 @@ export interface WerkenTransportOptions {
   createClient?: (options: WerkenTransportOptions) => PubSubClientLike;
 }
 
-export const DEFAULT_FLOW_CONTROL: Required<FlowControlOptions> = {
+const DEFAULT_FLOW_CONTROL: Required<FlowControlOptions> = {
   maxOutstandingMessages: 50,
   maxOutstandingBytes: 20 * 1024 * 1024,
   allowExcessMessages: false,
 };
 
-export const DEFAULT_MAX_STREAMS = 1;
-export const DEFAULT_ACK_DEADLINE_MS = 60_000;
-export const DEFAULT_MAX_EXTENSION_MS = 600_000;
+const DEFAULT_MAX_STREAMS = 1;
+const DEFAULT_ACK_DEADLINE_MS = 60_000;
+const DEFAULT_MAX_EXTENSION_MS = 600_000;
 export const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 30_000;
 
 /**
@@ -217,4 +225,39 @@ export function toSubscriberOptions(options: WerkenTransportOptions): Subscriber
     minAckDeadlineMs: options.ackDeadline?.initialMs ?? DEFAULT_ACK_DEADLINE_MS,
     maxExtensionTimeMs: options.ackDeadline?.maxExtensionMs ?? DEFAULT_MAX_EXTENSION_MS,
   };
+}
+
+/**
+ * Validates every numeric option once, at startup, naming the exact path that is wrong.
+ *
+ * Left unchecked these surface much later and much less legibly: a NaN flow-control limit that the
+ * SDK quietly replaces with its own default, a negative ack deadline, a zero TTL that makes the
+ * idempotency marker expire the instant it is written. "Invalid configuration" tells you nothing
+ * when a transport has a dozen numbers in it, so each message names its own option path.
+ */
+export function assertValidOptions(options: WerkenTransportOptions): void {
+  const flow = options.flowControl;
+  positiveInteger("flowControl.maxOutstandingMessages", flow?.maxOutstandingMessages);
+  positiveInteger("flowControl.maxOutstandingBytes", flow?.maxOutstandingBytes);
+  positiveInteger("streaming.maxStreams", options.streaming?.maxStreams);
+  positive("ackDeadline.initialMs", options.ackDeadline?.initialMs);
+  positive("ackDeadline.maxExtensionMs", options.ackDeadline?.maxExtensionMs);
+  positive("shutdownDrainTimeoutMs", options.shutdownDrainTimeoutMs);
+  positive("idempotency.ttlMs", options.idempotency?.ttlMs);
+  positive("schemaRegistry.cacheTtlMs", options.schemaRegistry?.cacheTtlMs);
+  positiveInteger("schemaRegistry.maxCachedRevisions", options.schemaRegistry?.maxCachedRevisions);
+}
+
+function positive(path: string, value: number | undefined): void {
+  if (value === undefined) return;
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`werken: ${path} must be a positive number, got ${JSON.stringify(value)}`);
+  }
+}
+
+function positiveInteger(path: string, value: number | undefined): void {
+  if (value === undefined) return;
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`werken: ${path} must be a positive integer, got ${JSON.stringify(value)}`);
+  }
 }

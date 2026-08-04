@@ -68,6 +68,14 @@ export class PartialPublishError extends Error {
   }
 }
 
+/**
+ * What an `encode` function hands back: the bytes, and optionally the media type they are in.
+ *
+ * Bare bytes mean `application/json`, which keeps the built-in `JSON.stringify` path and existing
+ * encoders working unchanged.
+ */
+export type EncodedPayload = Buffer | { readonly data: Buffer; readonly datacontenttype: string };
+
 export interface EventPublisherOptions {
   /** This service's `ce-source`. */
   source: string;
@@ -77,8 +85,12 @@ export interface EventPublisherOptions {
   /**
    * Encodes the payload. Without one, bodies are plain JSON — which Pub/Sub rejects on a topic
    * with a schema attached, since Pub/Sub's JSON encoding is Avro JSON rather than plain JSON.
+   *
+   * Return bare bytes and the event declares `application/json`. Return `{ data, datacontenttype }`
+   * to say what the bytes actually are, which is what protobuf, CBOR, binary Avro or a compressed
+   * body needs — otherwise a standards-aware consumer picks its decoder from a lie.
    */
-  encode?: (type: string, data: unknown) => Buffer;
+  encode?: (type: string, data: unknown) => EncodedPayload;
   /** Derives the ordering key from `subject` and enables ordering on the topic. */
   ordering?: boolean;
   /** Development-only resource scoping — see `WerkenTransportOptions.resourcePrefix`. */
@@ -126,6 +138,12 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
     const at = now();
     const orderingKey = options.ordering === true ? (request.orderingKey ?? request.subject) : request.orderingKey;
 
+    // Encoded before the attributes are built, because the encoder is what decides the media type
+    // those attributes have to declare.
+    const { data, datacontenttype } = normaliseEncoded(
+      options.encode?.(request.type, request.data) ?? Buffer.from(JSON.stringify(request.data)),
+    );
+
     const attributes = toPubSubAttributes({
       specversion: "1.0",
       id: uuidv7(),
@@ -136,13 +154,11 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
       // out-of-order arrivals need both to be reasoned about.
       time: request.time ?? at,
       ingestiontime: at,
-      datacontenttype: "application/json",
+      datacontenttype,
       dataschema: request.dataschema,
       traceparent: currentTraceparent(),
       extensions: request.extensions ?? {},
     });
-
-    const data = options.encode?.(request.type, request.data) ?? Buffer.from(JSON.stringify(request.data));
 
     const messageId = await topicFor(topicName).publishMessage({
       data,
@@ -189,4 +205,24 @@ function currentTraceparent(): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+const DEFAULT_CONTENT_TYPE = "application/json";
+
+/**
+ * Deliberately shallow: `type/subtype` with optional parameters, enough to catch a mistake before
+ * it reaches the wire as an invalid CloudEvent, without reimplementing RFC 2045 parameter parsing.
+ */
+const MEDIA_TYPE = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+\/[A-Za-z0-9!#$%&'*+.^_`|~-]+\s*(;.*)?$/;
+
+function normaliseEncoded(encoded: EncodedPayload): { data: Buffer; datacontenttype: string } {
+  if (Buffer.isBuffer(encoded)) return { data: encoded, datacontenttype: DEFAULT_CONTENT_TYPE };
+
+  if (!MEDIA_TYPE.test(encoded.datacontenttype)) {
+    throw new Error(
+      `werken: encode returned datacontenttype ${JSON.stringify(encoded.datacontenttype)}, ` +
+        'which is not a media type. Expected something like "application/protobuf".',
+    );
+  }
+  return { data: encoded.data, datacontenttype: encoded.datacontenttype };
 }

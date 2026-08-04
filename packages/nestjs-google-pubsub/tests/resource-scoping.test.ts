@@ -108,6 +108,75 @@ describe("subscription scoping", () => {
   });
 });
 
+// The prefix is resolved during startup, but the pipeline was built from the raw option, so a
+// handler and the dead-letter provenance both named a subscription that had not delivered anything.
+describe("the resolved name is what the pipeline reports", () => {
+  const scoped = (client: unknown, extra: Record<string, unknown> = {}) =>
+    new WerkenPubSubTransport({
+      projectId: "p",
+      subscription: "orders-consumer",
+      resourcePrefix: "alice",
+      createClient: () => client as never,
+      ...extra,
+    } as never);
+
+  const emit = async (subscription: EventEmitter, attributes: Record<string, string>) => {
+    subscription.emit("message", {
+      id: "m1",
+      attributes,
+      data: Buffer.from("{}"),
+      publishTime: new Date(),
+      ack: vi.fn(),
+      nack: vi.fn(),
+    });
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+  };
+
+  const VALID = {
+    "ce-specversion": "1.0",
+    "ce-id": "01931b7c-3f2a-7000-8000-000000000001",
+    "ce-source": "https://example.test/service",
+    "ce-type": "com.example.thing.happened.v1",
+  };
+
+  test("gives the handler the subscription it actually read from", async () => {
+    const { client, subscription } = fakeClient();
+    const transport = scoped(client);
+    let seen: string | undefined;
+    transport.addHandler(
+      VALID["ce-type"],
+      ((_data: unknown, ctx: { subscription: string }) => {
+        seen = ctx.subscription;
+      }) as never,
+      true,
+    );
+
+    await listen(transport);
+    await emit(subscription, VALID);
+
+    expect(seen).toBe("alice-orders-consumer");
+  });
+
+  test("names the scoped subscription in dead-letter provenance", async () => {
+    const published: Array<Record<string, string>> = [];
+    const { client, subscription } = fakeClient();
+    client.topic = vi.fn(() => ({
+      publishMessage: vi.fn(async (m: { attributes: Record<string, string> }) => {
+        published.push(m.attributes);
+        return undefined;
+      }),
+    })) as never;
+    const transport = scoped(client, { deadLetterTopic: "orders-dead-letters" });
+
+    await listen(transport);
+    // No ce-id, so this fails envelope validation and is dead-lettered.
+    await emit(subscription, { "ce-specversion": "1.0" });
+
+    expect(published[0]?.["werken-dl-source-subscription"]).toBe("alice-orders-consumer");
+  });
+});
+
 describe("startup failures", () => {
   test("fails when the scoped subscription does not exist, naming it exactly", async () => {
     // The library never provisions resources, so a missing scoped subscription must be a loud
@@ -124,6 +193,46 @@ describe("startup failures", () => {
 
     expect(String(error)).toMatch(/alice-orders-consumer/);
     expect(String(error)).toMatch(/does not exist/i);
+  });
+
+  // The client and subscription are created before the existence check, so a failure past that
+  // point used to leave the SDK's gRPC channels, retry timers and credentials-backed client alive.
+  // Repeated bootstrap attempts — a crash loop, a test suite — then stack them up.
+  test("closes what it created when the scoped subscription is missing", async () => {
+    const { client, subscription } = fakeClient(false);
+    const transport = new WerkenPubSubTransport({
+      projectId: "p",
+      subscription: "orders-consumer",
+      resourcePrefix: "alice",
+      createClient: () => client as never,
+    });
+
+    expect(String(await listen(transport))).toMatch(/does not exist/i);
+
+    expect(subscription.close).toHaveBeenCalledTimes(1);
+    expect(client.close).toHaveBeenCalledTimes(1);
+  });
+
+  test("closes the client when the existence check itself throws", async () => {
+    const { client, subscription } = fakeClient();
+    client.subscription = vi.fn(() =>
+      Object.assign(subscription, {
+        exists: vi.fn(async () => {
+          throw new Error("permission denied");
+        }),
+      }),
+    ) as never;
+    const transport = new WerkenPubSubTransport({
+      projectId: "p",
+      subscription: "orders-consumer",
+      resourcePrefix: "alice",
+      createClient: () => client as never,
+    });
+
+    expect(String(await listen(transport))).toMatch(/permission denied/);
+
+    expect(subscription.close).toHaveBeenCalledTimes(1);
+    expect(client.close).toHaveBeenCalledTimes(1);
   });
 
   test("fails on an invalid prefix rather than at first publish", async () => {
@@ -172,6 +281,57 @@ describe("startup failures", () => {
     const transport = new WerkenPubSubTransport({
       projectId: "p",
       subscription: "orders-consumer",
+      createClient: () => client as never,
+    });
+
+    expect(await listen(transport)).toBeUndefined();
+  });
+});
+
+/**
+ * Negative, zero, NaN and non-integer values used to be accepted and only surfaced later as
+ * surprising SDK, timer or SQL behaviour — a flow-control limit of NaN, an ack deadline of -1. The
+ * option path is named exactly, because "invalid configuration" tells you nothing when a transport
+ * has a dozen numbers in it.
+ */
+describe("numeric option validation", () => {
+  const listenTo = async (options: Record<string, unknown>) => {
+    const { client } = fakeClient();
+    const transport = new WerkenPubSubTransport({
+      projectId: "p",
+      subscription: "s",
+      createClient: () => client as never,
+      ...options,
+    } as never);
+    return String(await listen(transport));
+  };
+
+  test.each([
+    ["flowControl.maxOutstandingMessages", { flowControl: { maxOutstandingMessages: 0 } }],
+    ["flowControl.maxOutstandingBytes", { flowControl: { maxOutstandingBytes: -1 } }],
+    ["streaming.maxStreams", { streaming: { maxStreams: 0 } }],
+    ["ackDeadline.initialMs", { ackDeadline: { initialMs: Number.NaN } }],
+    ["ackDeadline.maxExtensionMs", { ackDeadline: { maxExtensionMs: -5 } }],
+    ["shutdownDrainTimeoutMs", { shutdownDrainTimeoutMs: -1 }],
+    ["idempotency.ttlMs", { idempotency: { ttlMs: 0 } }],
+    ["schemaRegistry.cacheTtlMs", { schemaRegistry: { readerTypeFor: (): undefined => undefined, cacheTtlMs: -1 } }],
+    [
+      "schemaRegistry.maxCachedRevisions",
+      { schemaRegistry: { readerTypeFor: (): undefined => undefined, maxCachedRevisions: 0 } },
+    ],
+  ])("rejects an invalid %s, naming it", async (path, options) => {
+    expect(await listenTo(options)).toContain(path);
+  });
+
+  test("rejects a non-integer count rather than letting the SDK round it", async () => {
+    expect(await listenTo({ flowControl: { maxOutstandingMessages: 2.5 } })).toContain("maxOutstandingMessages");
+  });
+
+  test("accepts the defaults", async () => {
+    const { client } = fakeClient();
+    const transport = new WerkenPubSubTransport({
+      projectId: "p",
+      subscription: "s",
       createClient: () => client as never,
     });
 

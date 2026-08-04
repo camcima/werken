@@ -1,5 +1,9 @@
 name: CI
 
+# Least privilege by default. A job that needs more grants it explicitly, as osv-scanner does.
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
@@ -21,11 +25,11 @@ jobs:
         node-version: ["22", "24"]
     name: ci (node ${{ matrix.node-version }})
     steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
         with:
           version: ${{ env.PNPM_VERSION }}
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: ${{ matrix.node-version }}
           cache: "pnpm"
@@ -37,10 +41,11 @@ jobs:
       # Acceptance criteria 11 and 13 (§9). Also enforced pre-commit via lefthook.
       - run: pnpm run lint:no-deep-imports
       - run: pnpm run lint:neutrality
+      - run: pnpm run lint:dead-code
       - run: pnpm run test:coverage
       # Uploaded from one leg only. The matrix legs produce identical coverage, so uploading both
       # just adds noise to the Codecov report.
-      - uses: codecov/codecov-action@v7
+      - uses: codecov/codecov-action@a99c28d3f0da835de33ff2feb2e15691c7b9641f # v7
         if: matrix.node-version == env.PRIMARY_NODE_VERSION
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -71,11 +76,11 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
         with:
           version: ${{ env.PNPM_VERSION }}
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: ${{ matrix.node-version }}
           cache: "pnpm"
@@ -103,7 +108,7 @@ jobs:
       # half, code reachable only against a real broker or database — the default client, the SQL
       # store — counts as uncovered, and the reported number cannot distinguish "tested in the
       # integration job" from "tested nowhere". One leg only, as above.
-      - uses: codecov/codecov-action@v7
+      - uses: codecov/codecov-action@a99c28d3f0da835de33ff2feb2e15691c7b9641f # v7
         if: matrix.node-version == env.PRIMARY_NODE_VERSION
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -117,11 +122,11 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
         with:
           version: ${{ env.PNPM_VERSION }}
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: ${{ env.PRIMARY_NODE_VERSION }}
           cache: "pnpm"
@@ -135,9 +140,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Run OSV-Scanner
-        uses: google/osv-scanner-action/osv-scanner-action@v2.3.8
+        uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
         with:
           scan-args: |-
             --recursive

@@ -20,7 +20,18 @@ export interface IdempotencyKey {
  * a connection, a tenant, or a transaction — rather than being fixed at construction.
  */
 export interface IdempotencyStore {
-  /** True if newly recorded; false if already present. */
+  /**
+   * Records the key. True if newly recorded; false if it was already present.
+   *
+   * `MessagePipeline` calls this only *after* a handler has succeeded, and `has()` is what decides
+   * whether the handler runs at all. So `false` here does not suppress anything — the side effect
+   * has already happened. It means another replica recorded the same event between this pipeline's
+   * `has()` and this call, which is a real cross-replica duplicate, and the pipeline logs it at WARN
+   * rather than letting it pass unseen.
+   *
+   * Implement it atomically anyway (`ON CONFLICT`, `SET NX`): the return value is the only place
+   * that race is observable, and a transactional Mode B store would rely on the atomicity directly.
+   */
   tryRecord(key: IdempotencyKey, ttlMs: number, ctx: CloudEventContext): Promise<boolean>;
   has(key: IdempotencyKey, ctx: CloudEventContext): Promise<boolean>;
 }
@@ -28,16 +39,15 @@ export interface IdempotencyStore {
 /**
  * Stable string form of a key, for stores that need a single-column identity.
  *
- * Joined on the ASCII unit separator rather than a space: `ce-source` is a URI-reference and
- * `consumer` is caller-supplied, so a printable separator that either could contain would let two
- * different keys flatten to one string — and the collision presents as an event silently dropped
- * as a duplicate, not as an error.
+ * JSON rather than a delimiter: `ce-source` is a URI-reference, `consumer` is caller-supplied and
+ * `ce-id` is producer-controlled, so any separator one of them could contain would let two
+ * different keys flatten to one string — and the collision presents as an event silently dropped as
+ * a duplicate, not as an error. JSON escapes the field boundaries instead of hoping they never
+ * appear, which no unescaped separator can promise.
  */
 export function idempotencyKeyToString(key: IdempotencyKey): string {
-  return [key.consumer, key.source, key.id].join(KEY_SEPARATOR);
+  return JSON.stringify([key.consumer, key.source, key.id]);
 }
-
-const KEY_SEPARATOR = "\u001f";
 
 // ---------------------------------------------------------------------------
 // SQL store
@@ -53,9 +63,11 @@ const KEY_SEPARATOR = "\u001f";
  * has to report — no distinguishing reads from writes, which is where drivers disagree most. Most
  * can simply return `rows.length`.
  *
- * Get this wrong and the failure is silent, not loud:
- *  - always-0 makes `tryRecord` report every message as already processed, dropping all of them;
- *  - always-0 also makes `has` report every message as new, disabling de-duplication.
+ * Get this wrong and the failure is silent, not loud, in both directions:
+ *  - always-0 makes `has` report every message as new, disabling de-duplication entirely, and makes
+ *    `tryRecord` report every write as already present, so each message logs a spurious duplicate;
+ *  - always-positive makes `has` report every message as already processed, so every message is
+ *    acked without the handler ever running. That is the one that loses work.
  *
  * See the README adapter examples, which are verified against each driver's actual types.
  */

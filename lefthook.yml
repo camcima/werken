@@ -21,6 +21,11 @@ pre-push:
       run: pnpm run test
     typecheck:
       run: pnpm run typecheck
+    # Pre-push rather than pre-commit: Knip resolves the whole workspace graph, which is too slow
+    # to pay on every commit, and a symbol's last caller often disappears a commit or two before
+    # the branch is done.
+    dead-code:
+      run: pnpm run lint:dead-code
     semgrep:
       run: "if command -v semgrep >/dev/null 2>&1; then semgrep scan --config auto --error --quiet packages/; fi"
 
