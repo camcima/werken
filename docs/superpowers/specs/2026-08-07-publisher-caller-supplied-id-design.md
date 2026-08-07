@@ -137,20 +137,28 @@ docstring saying what its absence costs. Stale "used for dead-letter publishing"
 - Topic-name and ordering-key derivation, currently inline in `publishOne`, moves to a
   closure-scoped `destinationFor(request, publishOptions)` returning `{ topicName, orderingKey }`.
   The recovery path needs both and only `publishOne` could compute them.
-- `publishOne` gains an internal third parameter controlling whether it resumes on failure. The
-  public `publish` becomes `(request, options) => publishOne(request, options, true)` so the knob
-  never reaches the exported signature. Rejected alternative: duplicate the publish call inside
-  `publishBatch`.
-- `publishBatch` passes `false`, then after `allSettled` resumes each distinct
+- `publishOne` gains an internal third parameter: a callback it invokes with the destination it is
+  about to publish on, immediately before `publishMessage`. The public `publish` wraps it so the
+  sink never reaches the exported signature, and resumes that recorded destination from its own
+  catch. Rejected alternative: duplicate the publish call inside `publishBatch`.
+- `publishBatch` collects one destination per index, then after `allSettled` resumes each distinct
   `(topicName, orderingKey)` among the rejected indices, once each. Distinctness is keyed on
   `JSON.stringify([topicName, orderingKey])` — same reasoning as `idempotencyKeyToString` and the
   harness `correlationKey`, both of which already refuse a delimiter because either component could
   contain it.
-- Recomputing a destination for a failed request can itself throw, since an unresolvable topic is
-  one of the failure modes. Caught and skipped: if no destination could be derived, nothing was
-  queued on any key, so nothing is suspended.
-- Resume is attempted whenever a non-empty ordering key was attached. Without `messageOrdering` on
-  the Topic the SDK ignores the key and no queue exists, so the call is a harmless no-op there.
+- Recorded rather than recomputed from the failed request. Several failure modes — an unresolvable
+  topic, an empty `id`, a throwing `encode`, a datacontenttype that is not one — reject before
+  `publishMessage` and so queue nothing under a key, and the SDK's resume is not a no-op on a key
+  it never touched: it drains a queue whose only batch is already in flight, deleting it, so the
+  next publish on that key races an outstanding RPC. Recording also removes any dependence on
+  `topicResolver` being deterministic.
+- `resumeOrdering` swallows whatever `client.topic()` or `resumePublishing` throws. Both are
+  caller-supplied, and recovery that propagates replaces the outcome it is recovering from — the
+  caller loses `PartialPublishError.published` and an outbox relay rethrows, rolls back and
+  republishes everything that already went out.
+- Resume is attempted whenever a non-empty ordering key was attached, `ordering` on or off. The SDK
+  selects its `OrderedQueue` on the message's ordering key alone, not on `messageOrdering`, so a key
+  passed explicitly with `ordering: false` still suspends on failure and still has to be resumed.
 
 ### 2. `feat(pubsub): let callers supply the CloudEvents id`
 

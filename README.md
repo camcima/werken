@@ -826,6 +826,10 @@ path. Within one `publishBatch` every message is queued before the first failure
 resuming earlier could release a later message in that same batch ahead of the one that failed —
 the exact inversion `ordering` was turned on to prevent.
 
+That guarantee is per batch. A `publish` issued concurrently on the same key from elsewhere in the
+process is not sequenced against it, so the resume can release that one ahead of the failure you are
+about to retry — which is the case the caveat above exists to cover.
+
 Resuming needs `resumePublishing` on the `Topic`. The real SDK has it; a custom `createClient`
 returning a `TopicLike` without it still typechecks, and the key simply stays suspended.
 
@@ -933,10 +937,15 @@ await sql.transaction(async (tx) => {
 Rows that failed keep `published_at is null` and are claimed again on the next tick. Because the
 claim is ordered by `event_id` and UUIDv7 sorts in generation order, a failed message is always
 re-sent before anything queued behind it — which is exactly what the
-[ordering caveat](#when-a-keyed-publish-fails) asks of you, satisfied for free.
+[ordering caveat](#when-a-keyed-publish-fails) asks of you, satisfied for free by a single relay
+instance.
 
-`FOR UPDATE SKIP LOCKED` is what lets several relay replicas run without claiming the same rows.
-Handlers still have to be idempotent: this narrows the duplicate window, it does not close it.
+`FOR UPDATE SKIP LOCKED` is what lets several relay replicas run without claiming the same rows, and
+it trades that ordering property away: replica B skips the rows replica A has locked and publishes a
+later message on the same key while A's failed ones wait for the next tick — and Pub/Sub does not
+order across distinct publisher clients regardless. One relay keeps the ordering; several buy
+throughput. Handlers still have to be idempotent: this narrows the duplicate window, it does not
+close it.
 
 ### Extension attributes
 

@@ -317,10 +317,12 @@ function resumeOrdering(destination: Destination): void {
 }
 ```
 
-Note the condition is "a key was attached", not "`ordering` is on". A caller can pass an explicit
-`orderingKey` with `ordering` off, in which case the SDK ignores the key, no ordered queue exists,
-and the resume is a harmless no-op. Do not narrow this to `options.ordering === true` — that would
-skip the resume for a caller who enabled message ordering on the Topic through their own
+Note the condition is "a key was attached", not "`ordering` is on". The SDK selects its
+`OrderedQueue` on the message's ordering key alone — `messageOrdering` is not consulted — so a
+caller who passes an explicit `orderingKey` with `ordering` off still gets an ordered queue that
+suspends on failure. The resume is necessary there, not a harmless no-op. Do not narrow this to
+`options.ordering === true`: that would leave the key silenced for the publisher's lifetime, and
+would also skip the resume for a caller who enabled message ordering on the Topic through their own
 `createClient`.
 
 Now replace the body of `publishOne` (currently lines 128-169) with:
