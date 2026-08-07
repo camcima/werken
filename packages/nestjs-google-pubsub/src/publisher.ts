@@ -24,6 +24,12 @@ export interface PublishRequest<T> {
   orderingKey?: string;
   /** Explicit occurrence time. Defaults to now. */
   time?: Date;
+  /**
+   * When the platform learned of the event, if that is not now. A relay publishes what its ingest
+   * transaction committed earlier, so defaulting this to publish time folds the queueing delay away
+   * and leaves ingest lag and relay lag indistinguishable in a per-stage lead-time SLI.
+   */
+  ingestiontime?: Date;
   dataschema?: string;
   extensions?: Record<string, string>;
 }
@@ -227,7 +233,7 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
       // ce-time is when it happened; ingestiontime is when the platform learned of it. Late and
       // out-of-order arrivals need both to be reasoned about.
       time: request.time ?? at,
-      ingestiontime: at,
+      ingestiontime: request.ingestiontime ?? at,
       datacontenttype,
       dataschema: request.dataschema,
       traceparent: currentTraceparent(),

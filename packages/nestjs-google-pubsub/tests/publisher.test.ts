@@ -151,14 +151,33 @@ describe("envelope construction", () => {
   });
 
   // ce-time is when it happened; ingestiontime is when the platform learned of it. Reasoning about
-  // lateness needs both, so the publisher always stamps the second one itself.
-  test("always stamps ingestiontime at publish time", async () => {
+  // lateness needs both, so the publisher stamps the second one itself unless told otherwise.
+  test("defaults ingestiontime to publish time", async () => {
     const now = new Date("2026-08-03T10:00:00.000Z");
     const { publisher, published } = publisherWith({ now: () => now });
 
     await publisher.publish({ type: TYPE, data: {}, time: new Date("2026-08-01T09:00:00.000Z") });
 
     expect(published[0].attributes["ce-ingestiontime"]).toBe("2026-08-03T10:00:00.000Z");
+  });
+
+  // A relay publishes what its ingest transaction committed earlier. Pinning ingestiontime to
+  // publish time would fold the queueing delay away, leaving ingest lag and relay lag
+  // indistinguishable in a per-stage lead-time SLI — and arbitrarily wrong when the relay backs up.
+  test("lets the caller supply ingestiontime, for events published by a relay", async () => {
+    const now = new Date("2026-08-03T10:00:00.000Z");
+    const { publisher, published } = publisherWith({ now: () => now });
+
+    await publisher.publish({
+      type: TYPE,
+      data: {},
+      time: new Date("2026-08-01T09:00:00.000Z"),
+      ingestiontime: new Date("2026-08-01T09:00:02.000Z"),
+    });
+
+    expect(published[0].attributes["ce-ingestiontime"]).toBe("2026-08-01T09:00:02.000Z");
+    // The occurrence time is untouched — the two answer different questions.
+    expect(published[0].attributes["ce-time"]).toBe("2026-08-01T09:00:00.000Z");
   });
 
   test("carries subject, dataschema and extensions through", async () => {
