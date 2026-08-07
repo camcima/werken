@@ -45,9 +45,15 @@ export interface SchemaRegistryOptions {
   maxCachedRevisions?: number;
 }
 
-/** The subset of `@google-cloud/pubsub`'s `Topic` used for dead-letter publishing. */
+/** The subset of `@google-cloud/pubsub`'s `Topic` this library publishes through. */
 export interface TopicLike {
   publishMessage(message: { data: Buffer; attributes: Record<string, string>; orderingKey?: string }): Promise<unknown>;
+  /**
+   * Lifts the SDK's publish suspension on an ordering key, which a failed keyed publish leaves in
+   * place for every later message on that key. Optional, so a client written against an earlier
+   * version still satisfies the type — at the cost that such a client never recovers the key.
+   */
+  resumePublishing?(orderingKey: string): void;
 }
 
 /** The subset of `@google-cloud/pubsub`'s `Schema` used to fetch a writer schema by revision. */

@@ -76,6 +76,12 @@ export class PartialPublishError extends Error {
  */
 export type EncodedPayload = Buffer | { readonly data: Buffer; readonly datacontenttype: string };
 
+/** Where a request is going and under which key — needed both to publish it and to recover it. */
+interface Destination {
+  readonly topicName: string;
+  readonly orderingKey?: string;
+}
+
 export interface EventPublisherOptions {
   /** This service's `ce-source`. */
   source: string;
@@ -125,7 +131,7 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
     return topic;
   }
 
-  async function publishOne<T>(request: PublishRequest<T>, publishOptions?: PublishOptions): Promise<string> {
+  function destinationFor<T>(request: PublishRequest<T>, publishOptions?: PublishOptions): Destination {
     const resolved = publishOptions?.topic ?? options.topicResolver(request.type);
     if (resolved === undefined || resolved === "") {
       throw new Error(
@@ -133,10 +139,59 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
           "Add it to the topic resolver, or pass an explicit topic.",
       );
     }
-    const topicName = applyResourcePrefix(resolved, options.resourcePrefix);
+    const key = options.ordering === true ? (request.orderingKey ?? request.subject) : request.orderingKey;
+    return {
+      topicName: applyResourcePrefix(resolved, options.resourcePrefix),
+      orderingKey: key === undefined || key === "" ? undefined : key,
+    };
+  }
+
+  /**
+   * A failed keyed publish leaves the SDK rejecting every later message on that key, so a publisher
+   * that never resumes goes permanently deaf on it. Optional on TopicLike, so a custom client that
+   * predates this keeps the old behaviour rather than failing to compile.
+   */
+  function resumeOrdering(destination: Destination): void {
+    if (destination.orderingKey === undefined) return;
+    topicFor(destination.topicName).resumePublishing?.(destination.orderingKey);
+  }
+
+  function resumeFailed<T>(
+    requests: Array<PublishRequest<T>>,
+    failures: readonly PublishFailure[],
+    publishOptions?: PublishOptions,
+  ): void {
+    // JSON rather than a delimiter, for the same reason `idempotencyKeyToString` uses it: a topic
+    // name and an ordering key are both caller-controlled, so any separator either could contain
+    // would flatten two distinct destinations to one string and skip a resume that was needed.
+    const seen = new Set<string>();
+    for (const failure of failures) {
+      let destination: Destination;
+      try {
+        destination = destinationFor(requests[failure.index], publishOptions);
+      } catch {
+        // Resolving the destination is itself one of the ways a request fails. If there is no
+        // destination, nothing was ever queued under a key, so nothing is suspended.
+        continue;
+      }
+      if (destination.orderingKey === undefined) continue;
+
+      const seenKey = JSON.stringify([destination.topicName, destination.orderingKey]);
+      if (seen.has(seenKey)) continue;
+      seen.add(seenKey);
+      resumeOrdering(destination);
+    }
+  }
+
+  async function publishOne<T>(
+    request: PublishRequest<T>,
+    publishOptions: PublishOptions | undefined,
+    // False from publishBatch, which resumes once per key after the whole batch has settled.
+    resumeOnFailure: boolean,
+  ): Promise<string> {
+    const destination = destinationFor(request, publishOptions);
 
     const at = now();
-    const orderingKey = options.ordering === true ? (request.orderingKey ?? request.subject) : request.orderingKey;
 
     // Encoded before the attributes are built, because the encoder is what decides the media type
     // those attributes have to declare.
@@ -160,26 +215,39 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
       extensions: request.extensions ?? {},
     });
 
-    const messageId = await topicFor(topicName).publishMessage({
-      data,
-      attributes,
-      ...(orderingKey === undefined || orderingKey === "" ? {} : { orderingKey }),
-    });
-    return String(messageId);
+    try {
+      const messageId = await topicFor(destination.topicName).publishMessage({
+        data,
+        attributes,
+        ...(destination.orderingKey === undefined ? {} : { orderingKey: destination.orderingKey }),
+      });
+      return String(messageId);
+    } catch (error) {
+      if (resumeOnFailure) resumeOrdering(destination);
+      throw error;
+    }
   }
 
   return {
-    publish: publishOne,
+    // Wrapped rather than passed by reference, so publishOne's internal resume flag stays off the
+    // public signature.
+    publish: <T>(request: PublishRequest<T>, publishOptions?: PublishOptions) =>
+      publishOne(request, publishOptions, true),
     async publishBatch(requests, publishOptions) {
       // Every publish is issued before any is awaited. Awaiting each in turn would flush a batch of
       // one — the SDK batches what is queued together — while the calls still happen in request
       // order, which is what preserves ordering per ordering key.
-      const settled = await Promise.allSettled(requests.map((request) => publishOne(request, publishOptions)));
+      const settled = await Promise.allSettled(requests.map((request) => publishOne(request, publishOptions, false)));
 
       const failures = settled.flatMap<PublishFailure>((result, index) =>
         result.status === "rejected" ? [{ index, type: requests[index].type, cause: result.reason }] : [],
       );
       if (failures.length > 0) {
+        // Resumed only now, with every publish settled. The whole batch is queued on a key before
+        // the first failure is observable, so lifting the suspension any earlier could release a
+        // later message in this same batch ahead of the one that failed.
+        resumeFailed(requests, failures, publishOptions);
+
         const published = settled.flatMap<PublishSuccess>((result, index) =>
           result.status === "fulfilled" ? [{ index, messageId: result.value }] : [],
         );
