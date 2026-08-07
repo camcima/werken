@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0](https://github.com/camcima/werken/compare/v0.3.0...v0.4.0) (2026-08-07)
+
+### Features
+
+* **pubsub:** let callers supply ingestiontime ([71f83f5](https://github.com/camcima/werken/commit/71f83f5c2fdbaa4c62a5e8e6eb110a99220b086c))
+* **pubsub:** let callers supply the CloudEvents id ([e92cc84](https://github.com/camcima/werken/commit/e92cc842a983527f40fad4e0e36117b077f9ee0c))
+
+### Bug Fixes
+
+* **deps:** override nanoid to 3.3.17 for GHSA-2v37-7h3g-55p8 ([5d0b90e](https://github.com/camcima/werken/commit/5d0b90eb12e6a3a5ee610d12612097e5844e87db))
+* **pubsub:** resume only the ordering keys a publish actually reached ([6759d5f](https://github.com/camcima/werken/commit/6759d5fd1324a35a9c463d856484d7db6cb82802))
+* **pubsub:** resume publishing on an ordering key after a failed publish ([ae4c5ea](https://github.com/camcima/werken/commit/ae4c5ea2f6cdd395dac44cad029dc5e001cc503c))
+
 ## [0.3.0](https://github.com/camcima/werken/compare/v0.2.0...v0.3.0) (2026-08-04)
 
 ### Features
