@@ -7,6 +7,19 @@ import { applyResourcePrefix, assertResourcePrefixSafe } from "./resource-name.j
 export interface PublishRequest<T> {
   type: string;
   data: T;
+  /**
+   * Overrides the generated event id. Supply one when the id has to survive a republish: a
+   * transactional outbox mints it inside the ingest transaction and stores it on the row, so a
+   * relay that crashes between publishing and marking republishes under the same id and consumer
+   * de-duplication collapses the two into one. Left to generate, that republish is a second event.
+   *
+   * CloudEvents 1.0 requires this to be unique per `source`. Nothing here enforces it, and nothing
+   * could: a reused id is indistinguishable from a redelivery to every consumer downstream.
+   *
+   * Sent verbatim, whitespace and all — only the emptiness check trims. Consumers de-duplicate on
+   * the literal value, so a republish of the same stored id still collapses into one event.
+   */
+  id?: string;
   subject?: string;
   /** Overrides the configured source. Rarely needed. */
   source?: string;
@@ -14,6 +27,12 @@ export interface PublishRequest<T> {
   orderingKey?: string;
   /** Explicit occurrence time. Defaults to now. */
   time?: Date;
+  /**
+   * When the platform learned of the event, if that is not now. A relay publishes what its ingest
+   * transaction committed earlier, so defaulting this to publish time folds the queueing delay away
+   * and leaves ingest lag and relay lag indistinguishable in a per-stage lead-time SLI.
+   */
+  ingestiontime?: Date;
   dataschema?: string;
   extensions?: Record<string, string>;
 }
@@ -76,6 +95,12 @@ export class PartialPublishError extends Error {
  */
 export type EncodedPayload = Buffer | { readonly data: Buffer; readonly datacontenttype: string };
 
+/** Where a request is going and under which key — needed both to publish it and to recover it. */
+interface Destination {
+  readonly topicName: string;
+  readonly orderingKey?: string;
+}
+
 export interface EventPublisherOptions {
   /** This service's `ce-source`. */
   source: string;
@@ -118,14 +143,19 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
   function topicFor(name: string): TopicLike {
     let topic = topics.get(name);
     if (topic === undefined) {
-      // The SDK ignores orderingKey unless the Topic itself was constructed with messageOrdering.
+      // messageOrdering is inert in the SDK as of 5.3.1: it is stored on the publisher's settings
+      // and never read, because the ordered queue is built from the message's own orderingKey.
+      // Passed regardless, since it is the documented way to declare the intent and a client that
+      // starts enforcing it again must not find it missing. Do not read its absence as "the key is
+      // ignored" — it is not, which is why a failed keyed publish must be resumed even with
+      // `ordering` off.
       topic = options.client.topic(name, options.ordering === true ? { messageOrdering: true } : undefined);
       topics.set(name, topic);
     }
     return topic;
   }
 
-  async function publishOne<T>(request: PublishRequest<T>, publishOptions?: PublishOptions): Promise<string> {
+  function destinationFor<T>(request: PublishRequest<T>, publishOptions?: PublishOptions): Destination {
     const resolved = publishOptions?.topic ?? options.topicResolver(request.type);
     if (resolved === undefined || resolved === "") {
       throw new Error(
@@ -133,10 +163,72 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
           "Add it to the topic resolver, or pass an explicit topic.",
       );
     }
-    const topicName = applyResourcePrefix(resolved, options.resourcePrefix);
+    const key = options.ordering === true ? (request.orderingKey ?? request.subject) : request.orderingKey;
+    return {
+      topicName: applyResourcePrefix(resolved, options.resourcePrefix),
+      orderingKey: key === undefined || key === "" ? undefined : key,
+    };
+  }
+
+  /**
+   * A failed keyed publish leaves the SDK rejecting every later message on that key, so a publisher
+   * that never resumes goes permanently deaf on it. Optional on TopicLike, so a custom client that
+   * predates this keeps the old behaviour rather than failing to compile.
+   */
+  function resumeOrdering(destination: Destination): void {
+    if (destination.orderingKey === undefined) return;
+    try {
+      topicFor(destination.topicName).resumePublishing?.(destination.orderingKey);
+    } catch {
+      // Swallowed: recovery must never replace the outcome it is recovering from. `client.topic()`
+      // and `resumePublishing` are both caller-supplied, so a throw from either would surface in
+      // place of the publish error and take `PartialPublishError.published` with it — leaving an
+      // outbox relay to roll back and republish everything that already went out.
+    }
+  }
+
+  function resumeFailed(attempted: ReadonlyArray<Destination | undefined>, failures: readonly PublishFailure[]): void {
+    // JSON rather than a delimiter, for the same reason `idempotencyKeyToString` uses it: a topic
+    // name and an ordering key are both caller-controlled, so any separator either could contain
+    // would flatten two distinct destinations to one string and skip a resume that was needed.
+    const seen = new Set<string>();
+    for (const failure of failures) {
+      // What the publish was attempted on, never a destination recomputed from the request. An
+      // empty id, a throwing `encode` and a datacontenttype that is not one all fail with a
+      // resolvable destination but nothing queued under its key, and resuming an untouched key is
+      // not a no-op: the SDK's resume drains a queue whose only batch has already been dispatched,
+      // deleting it, so the next publish on that key builds a fresh queue racing an outstanding
+      // RPC. It also stops a `topicResolver` that reads mutable config from naming a different
+      // topic on the way back, resuming a key nothing failed on and skipping the one that did.
+      const destination = attempted[failure.index];
+      if (destination?.orderingKey === undefined) continue;
+
+      const seenKey = JSON.stringify([destination.topicName, destination.orderingKey]);
+      if (seen.has(seenKey)) continue;
+      seen.add(seenKey);
+      resumeOrdering(destination);
+    }
+  }
+
+  async function publishOne<T>(
+    request: PublishRequest<T>,
+    publishOptions: PublishOptions | undefined,
+    // Called with the destination this publish is about to be attempted on, and only then, so both
+    // callers recover from what was reached rather than from what can be recomputed afterwards.
+    recordAttempt: (destination: Destination) => void,
+  ): Promise<string> {
+    // Rejected rather than defaulted. A silent fallback to uuidv7() would hand a fresh id to a
+    // caller who believes they pinned a stable one — worse off than a caller who never tried, and
+    // invisible until two events show up downstream for one state change.
+    if (request.id !== undefined && request.id.trim() === "") {
+      throw new Error(
+        "werken: PublishRequest.id was supplied but is empty. Omit it to generate one, or pass a non-empty id.",
+      );
+    }
+
+    const destination = destinationFor(request, publishOptions);
 
     const at = now();
-    const orderingKey = options.ordering === true ? (request.orderingKey ?? request.subject) : request.orderingKey;
 
     // Encoded before the attributes are built, because the encoder is what decides the media type
     // those attributes have to declare.
@@ -146,40 +238,71 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
 
     const attributes = toPubSubAttributes({
       specversion: "1.0",
-      id: uuidv7(),
+      id: request.id ?? uuidv7(),
       source: request.source ?? options.source,
       type: request.type,
       subject: request.subject,
       // ce-time is when it happened; ingestiontime is when the platform learned of it. Late and
       // out-of-order arrivals need both to be reasoned about.
       time: request.time ?? at,
-      ingestiontime: at,
+      ingestiontime: request.ingestiontime ?? at,
       datacontenttype,
       dataschema: request.dataschema,
       traceparent: currentTraceparent(),
       extensions: request.extensions ?? {},
     });
 
-    const messageId = await topicFor(topicName).publishMessage({
+    const topic = topicFor(destination.topicName);
+    // Recorded with the Topic in hand and nothing left between here and the publish: from this
+    // point on the SDK can have queued the message under the key, which is the only condition
+    // under which resuming that key is a recovery rather than a hazard.
+    recordAttempt(destination);
+
+    const messageId = await topic.publishMessage({
       data,
       attributes,
-      ...(orderingKey === undefined || orderingKey === "" ? {} : { orderingKey }),
+      ...(destination.orderingKey === undefined ? {} : { orderingKey: destination.orderingKey }),
     });
     return String(messageId);
   }
 
   return {
-    publish: publishOne,
+    // Wrapped rather than passed by reference, so publishOne's internal attempt sink stays off the
+    // public signature.
+    async publish<T>(request: PublishRequest<T>, publishOptions?: PublishOptions) {
+      let attempted: Destination | undefined;
+      try {
+        return await publishOne(request, publishOptions, (destination) => {
+          attempted = destination;
+        });
+      } catch (error) {
+        // Unset means the failure landed before `publishMessage`, so no key was ever suspended.
+        if (attempted !== undefined) resumeOrdering(attempted);
+        throw error;
+      }
+    },
     async publishBatch(requests, publishOptions) {
+      const attempted = new Array<Destination | undefined>(requests.length);
       // Every publish is issued before any is awaited. Awaiting each in turn would flush a batch of
       // one — the SDK batches what is queued together — while the calls still happen in request
       // order, which is what preserves ordering per ordering key.
-      const settled = await Promise.allSettled(requests.map((request) => publishOne(request, publishOptions)));
+      const settled = await Promise.allSettled(
+        requests.map((request, index) =>
+          publishOne(request, publishOptions, (destination) => {
+            attempted[index] = destination;
+          }),
+        ),
+      );
 
       const failures = settled.flatMap<PublishFailure>((result, index) =>
         result.status === "rejected" ? [{ index, type: requests[index].type, cause: result.reason }] : [],
       );
       if (failures.length > 0) {
+        // Resumed only now, with every publish settled. The whole batch is queued on a key before
+        // the first failure is observable, so lifting the suspension any earlier could release a
+        // later message in this same batch ahead of the one that failed.
+        resumeFailed(attempted, failures);
+
         const published = settled.flatMap<PublishSuccess>((result, index) =>
           result.status === "fulfilled" ? [{ index, messageId: result.value }] : [],
         );

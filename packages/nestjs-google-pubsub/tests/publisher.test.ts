@@ -21,6 +21,8 @@ function fakeClient() {
   const published: Published[] = [];
   /** One entry per `client.topic()` call, so Topic reuse can be asserted. */
   const topicCalls: string[] = [];
+  /** One entry per `resumePublishing` call, so ordering-key recovery can be asserted. */
+  const resumed: Array<{ topic: string; orderingKey: string }> = [];
   let nextId = 0;
   const client = {
     topic: vi.fn((topic: string, topicOptions?: unknown) => {
@@ -30,23 +32,71 @@ function fakeClient() {
           published.push({ topic, topicOptions, ...m });
           return `msg-${++nextId}`;
         }),
+        resumePublishing: vi.fn((orderingKey: string) => {
+          resumed.push({ topic, orderingKey });
+        }),
       };
     }),
     subscription: vi.fn(),
     close: vi.fn(async () => {}),
   };
-  return { published, topicCalls, client: client as unknown as PubSubClientLike };
+  return { published, topicCalls, resumed, client: client as unknown as PubSubClientLike };
 }
 
 function publisherWith(overrides: Partial<Parameters<typeof createEventPublisher>[0]> = {}) {
-  const { published, topicCalls, client } = fakeClient();
+  const { published, topicCalls, resumed, client } = fakeClient();
   const publisher = createEventPublisher({
     source: SOURCE,
     client,
     topicResolver: (type: string) => type.replaceAll(".", "-"),
     ...overrides,
   });
-  return { publisher, published, topicCalls };
+  return { publisher, published, topicCalls, resumed };
+}
+
+/**
+ * A client whose publishes reject, so ordering-key recovery can be asserted. `shouldFail` is given
+ * the 1-based attempt number, letting a test fail some publishes in a batch and not others.
+ */
+function failingClient(shouldFail: (attempt: number) => boolean = () => true) {
+  /** One entry per message that actually reached `publishMessage`, failure or not. */
+  const sent: Array<{ topic: string; orderingKey?: string }> = [];
+  /** One entry per `resumePublishing` call, so ordering-key recovery can be asserted. */
+  const resumed: Array<{ topic: string; orderingKey: string }> = [];
+  let attempt = 0;
+  const client = {
+    topic: vi.fn((topic: string) => ({
+      publishMessage: vi.fn(async (m: { orderingKey?: string }) => {
+        attempt++;
+        sent.push({ topic, orderingKey: m.orderingKey });
+        if (shouldFail(attempt)) throw new Error(`publish ${attempt} failed`);
+        return `msg-${attempt}`;
+      }),
+      resumePublishing: vi.fn((orderingKey: string) => {
+        resumed.push({ topic, orderingKey });
+      }),
+    })),
+    subscription: vi.fn(),
+    close: vi.fn(async () => {}),
+  };
+  return { sent, resumed, client: client as unknown as PubSubClientLike };
+}
+
+/** A client that publishes fine on any key but "bad", and whose recovery throws on the way out. */
+function resumeThrowingClient() {
+  return {
+    topic: vi.fn(() => ({
+      publishMessage: vi.fn(async (m: { orderingKey?: string }) => {
+        if (m.orderingKey === "bad") throw new Error("publish failed");
+        return "msg-1";
+      }),
+      resumePublishing: vi.fn(() => {
+        throw new Error("resume failed");
+      }),
+    })),
+    subscription: vi.fn(),
+    close: vi.fn(async () => {}),
+  } as unknown as PubSubClientLike;
 }
 
 const originalEnv = process.env.NODE_ENV;
@@ -79,6 +129,28 @@ describe("envelope construction", () => {
     expect([...ids].sort()).toEqual(ids);
   });
 
+  // The outbox pattern mints the id inside the ingest transaction and stores it on the row, so a
+  // relay that crashes between publishing and marking republishes under the same id and consumer
+  // de-duplication collapses the two. Generated here instead, a republish is a second event.
+  test("lets the caller supply the event id", async () => {
+    const { publisher, published } = publisherWith();
+    await publisher.publish({ type: TYPE, data: {}, id: "01927f9a-0000-7000-8000-000000000001" });
+
+    expect(published[0].attributes["ce-id"]).toBe("01927f9a-0000-7000-8000-000000000001");
+  });
+
+  // Falling back to uuidv7() would reinstate the exact duplicate this option exists to prevent, and
+  // do it silently: toPubSubAttributes writes ce-id verbatim, so an empty one is not caught until
+  // the consumer rejects the envelope as missing-attribute, blaming the wrong side of the wire.
+  test.each([
+    ["empty", ""],
+    ["whitespace-only", "   "],
+  ])("rejects an %s id rather than generating one behind the caller's back", async (_label, id) => {
+    const { publisher } = publisherWith();
+
+    await expect(publisher.publish({ type: TYPE, data: {}, id })).rejects.toThrow(/PublishRequest\.id/);
+  });
+
   test("sets the configured source, and lets a request override it", async () => {
     const { publisher, published } = publisherWith();
     await publisher.publish({ type: TYPE, data: {} });
@@ -100,14 +172,33 @@ describe("envelope construction", () => {
   });
 
   // ce-time is when it happened; ingestiontime is when the platform learned of it. Reasoning about
-  // lateness needs both, so the publisher always stamps the second one itself.
-  test("always stamps ingestiontime at publish time", async () => {
+  // lateness needs both, so the publisher stamps the second one itself unless told otherwise.
+  test("defaults ingestiontime to publish time", async () => {
     const now = new Date("2026-08-03T10:00:00.000Z");
     const { publisher, published } = publisherWith({ now: () => now });
 
     await publisher.publish({ type: TYPE, data: {}, time: new Date("2026-08-01T09:00:00.000Z") });
 
     expect(published[0].attributes["ce-ingestiontime"]).toBe("2026-08-03T10:00:00.000Z");
+  });
+
+  // A relay publishes what its ingest transaction committed earlier. Pinning ingestiontime to
+  // publish time would fold the queueing delay away, leaving ingest lag and relay lag
+  // indistinguishable in a per-stage lead-time SLI — and arbitrarily wrong when the relay backs up.
+  test("lets the caller supply ingestiontime, for events published by a relay", async () => {
+    const now = new Date("2026-08-03T10:00:00.000Z");
+    const { publisher, published } = publisherWith({ now: () => now });
+
+    await publisher.publish({
+      type: TYPE,
+      data: {},
+      time: new Date("2026-08-01T09:00:00.000Z"),
+      ingestiontime: new Date("2026-08-01T09:00:02.000Z"),
+    });
+
+    expect(published[0].attributes["ce-ingestiontime"]).toBe("2026-08-01T09:00:02.000Z");
+    // The occurrence time is untouched — the two answer different questions.
+    expect(published[0].attributes["ce-time"]).toBe("2026-08-01T09:00:00.000Z");
   });
 
   test("carries subject, dataschema and extensions through", async () => {
@@ -198,12 +289,173 @@ describe("ordering", () => {
     expect(published[0].orderingKey).toBe("custom");
   });
 
-  // The SDK ignores orderingKey unless the Topic itself was constructed with messageOrdering.
+  // messageOrdering is inert in the SDK as of 5.3.1, so this pins the option Werken passes, not any
+  // behaviour it buys — kept so a client that starts enforcing it again does not find it missing.
   test("constructs the topic with messageOrdering enabled", async () => {
     const { publisher, published } = publisherWith({ ordering: true });
     await publisher.publish({ type: TYPE, data: {}, subject: "thing-42" });
 
     expect(published[0].topicOptions).toMatchObject({ messageOrdering: true });
+  });
+});
+
+describe("ordering-key recovery", () => {
+  const RESOLVED_TOPIC = "com-example-thing-happened-v1";
+
+  // The SDK suspends an ordering key the moment a keyed publish fails, and then rejects every later
+  // message on that key. Without resuming, one failure silences the key for the publisher's whole
+  // lifetime — permanent silence traded for a recoverable ordering hazard.
+  test("resumes the ordering key when a keyed publish fails, and still raises the original error", async () => {
+    const { resumed, client } = failingClient();
+    const { publisher } = publisherWith({ client, ordering: true });
+
+    await expect(publisher.publish({ type: TYPE, data: {}, subject: "thing-42" })).rejects.toThrow("publish 1 failed");
+
+    expect(resumed).toEqual([{ topic: RESOLVED_TOPIC, orderingKey: "thing-42" }]);
+  });
+
+  test("does not resume when the request carried no ordering key", async () => {
+    const { resumed, client } = failingClient();
+    const { publisher } = publisherWith({ client, ordering: true });
+
+    await expect(publisher.publish({ type: TYPE, data: {} })).rejects.toThrow("publish 1 failed");
+
+    expect(resumed).toEqual([]);
+  });
+
+  test("resumes each distinct key once per batch, not once per failure", async () => {
+    const { resumed, client } = failingClient();
+    const { publisher } = publisherWith({ client, ordering: true });
+
+    await expect(
+      publisher.publishBatch([
+        { type: TYPE, data: {}, subject: "thing-42" },
+        { type: TYPE, data: {}, subject: "thing-42" },
+        { type: TYPE, data: {}, subject: "other" },
+      ]),
+    ).rejects.toThrow(PartialPublishError);
+
+    expect(resumed).toEqual([
+      { topic: RESOLVED_TOPIC, orderingKey: "thing-42" },
+      { topic: RESOLVED_TOPIC, orderingKey: "other" },
+    ]);
+  });
+
+  // Resuming from the failing publish's own error path would lift the suspension while its
+  // batch-mates are still in flight on that key, letting a later message in the same batch go out
+  // ahead of the one that failed — the inversion `ordering` was turned on to prevent.
+  test("does not resume until every publish in the batch has settled", async () => {
+    const order: string[] = [];
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => (release = r));
+    let attempt = 0;
+    const client = {
+      topic: () => ({
+        publishMessage: async () => {
+          attempt++;
+          if (attempt === 1) throw new Error("first failed");
+          await gate;
+          order.push("slow publish settled");
+          return "msg-2";
+        },
+        resumePublishing: (orderingKey: string) => {
+          order.push(`resumed ${orderingKey}`);
+        },
+      }),
+      subscription: vi.fn(),
+      close: vi.fn(async () => {}),
+    } as unknown as PubSubClientLike;
+    const { publisher } = publisherWith({ client, ordering: true });
+
+    const batch = publisher
+      .publishBatch([
+        { type: TYPE, data: {}, subject: "k" },
+        { type: TYPE, data: {}, subject: "k" },
+      ])
+      .catch(() => {});
+    await new Promise((r) => setImmediate(r));
+
+    // The first publish has already rejected, but the second is still queued on the same key.
+    expect(order).toEqual([]);
+
+    release!();
+    await batch;
+    expect(order).toEqual(["slow publish settled", "resumed k"]);
+  });
+
+  // Only a publish that reached the SDK can have suspended a key. Recomputing the destination from
+  // the request would resume one it never touched, and that is not a no-op: the SDK's resume drains
+  // a queue whose only batch is already in flight, deleting it, so the next publish on that key
+  // builds a fresh queue racing an outstanding RPC — the inversion ordering was turned on to stop.
+  test("does not resume a key whose publish never reached the SDK", async () => {
+    const { resumed, client } = failingClient();
+    const { publisher } = publisherWith({ client, ordering: true });
+
+    const error = await publisher
+      .publishBatch([
+        { type: TYPE, data: {}, subject: "attempted" },
+        { type: TYPE, data: {}, subject: "never-queued", id: "   " },
+      ])
+      .catch((e: unknown) => e);
+
+    // Both failed, but only one of them ever got as far as publishMessage.
+    expect((error as PartialPublishError).failures.map((f) => f.index)).toEqual([0, 1]);
+    expect(resumed).toEqual([{ topic: RESOLVED_TOPIC, orderingKey: "attempted" }]);
+  });
+
+  // `ordering: false` does not mean no ordered queue: the SDK picks its OrderedQueue on the
+  // message's orderingKey alone, so an explicit key suspends on failure even though the Topic was
+  // built without messageOrdering. Skipping the resume here would silence that key for good.
+  test("attaches and recovers an explicit ordering key with ordering off", async () => {
+    const { sent, resumed, client } = failingClient();
+    const { publisher } = publisherWith({ client, ordering: false });
+
+    await expect(publisher.publish({ type: TYPE, data: {}, orderingKey: "custom" })).rejects.toThrow(
+      "publish 1 failed",
+    );
+
+    expect(sent).toEqual([{ topic: RESOLVED_TOPIC, orderingKey: "custom" }]);
+    expect(resumed).toEqual([{ topic: RESOLVED_TOPIC, orderingKey: "custom" }]);
+  });
+
+  // Recovery must never replace the outcome it is recovering from. A throwing resumePublishing that
+  // propagated would take PartialPublishError.published with it, and the outbox relay rethrows
+  // anything that is not a PartialPublishError — rolling back and republishing what already went out.
+  test("keeps the partial-publish result when resumePublishing throws", async () => {
+    const { publisher } = publisherWith({ client: resumeThrowingClient(), ordering: true });
+
+    const error = await publisher
+      .publishBatch([
+        { type: TYPE, data: {}, subject: "good" },
+        { type: TYPE, data: {}, subject: "bad" },
+      ])
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(PartialPublishError);
+    expect((error as PartialPublishError).published).toEqual([{ index: 0, messageId: "msg-1" }]);
+  });
+
+  test("keeps the original publish error when resumePublishing throws", async () => {
+    const { publisher } = publisherWith({ client: resumeThrowingClient(), ordering: true });
+
+    await expect(publisher.publish({ type: TYPE, data: {}, subject: "bad" })).rejects.toThrow("publish failed");
+  });
+
+  // resumePublishing is optional on TopicLike so an existing custom client still satisfies the type.
+  // Reaching for it unconditionally would turn a publish failure into a TypeError and lose the cause.
+  test("survives a Topic that has no resumePublishing", async () => {
+    const client = {
+      topic: () => ({
+        publishMessage: async () => {
+          throw new Error("boom");
+        },
+      }),
+      subscription: vi.fn(),
+      close: vi.fn(async () => {}),
+    } as unknown as PubSubClientLike;
+    const { publisher } = publisherWith({ client, ordering: true });
+
+    await expect(publisher.publish({ type: TYPE, data: {}, subject: "thing-42" })).rejects.toThrow("boom");
   });
 });
 

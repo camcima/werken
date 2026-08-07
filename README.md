@@ -555,6 +555,10 @@ commits atomically with the business write. Same `SqlExecutor`, same config shap
 > the handler returns, which means the handler's transaction must still be open at that point for
 > the two writes to be atomic. That sequencing is unresolved.
 
+> The producer-side dual — making a publisher's events survive a republish with their identity
+> intact — is [the transactional outbox](#transactional-outbox), and that _is_ supported. It does
+> not unblock Mode B; the two are independent.
+
 ### Therefore
 
 **Handlers must be idempotent regardless of which mode you use, and regardless of whether
@@ -776,11 +780,18 @@ separately, lifts `traceparent` from the ambient OpenTelemetry context, and reso
 topic from the event type. One `Topic` is built per destination and reused, so the SDK's own
 batching actually engages.
 
+`id` and `ingestiontime` can both be supplied on the request when those defaults are wrong — which
+is what a [transactional outbox](#transactional-outbox) needs, since its events are minted in one
+transaction and published by a relay some time later. Supplying an empty `id` throws rather than
+quietly generating one: a caller who believes they pinned an id and did not is worse off than one
+who never tried.
+
 ### Ordering
 
 Ordering is **off** unless you ask for it. With `ordering: true` the publisher derives each message's
 ordering key from `subject` (an explicit `orderingKey` on the request still wins), and builds its
-`Topic` with `messageOrdering` — which the SDK requires, or it ignores the key entirely:
+`Topic` with `messageOrdering` — which declares the intent, though the SDK has not enforced it since
+at least 5.3.1:
 
 ```ts
 const publisher = createEventPublisher({
@@ -791,11 +802,40 @@ const publisher = createEventPublisher({
 });
 ```
 
-Without `ordering: true`, `subject` is not used as an ordering key. An explicit `orderingKey` on the
-request is still handed to the SDK, but the `Topic` was not built with `messageOrdering`, so nothing
-orders on it — and the publish succeeds all the same, with no error to notice. Ordering also needs
-message ordering enabled on the **subscription**, which is a broker-side setting Werken does not
-manage.
+Without `ordering: true`, `subject` is not used as an ordering key — but an explicit `orderingKey` on
+the request still is. The SDK builds its ordered queue from the key on the message alone, so those
+publishes are serialised per key and the key is suspended if one fails, exactly as with
+`ordering: true`. All the flag changes is whether Werken derives the key from `subject` for you.
+
+Ordered **delivery** is a separate matter: it needs message ordering enabled on the **subscription**,
+a broker-side setting Werken does not manage. Without it you get ordered publishing and unordered
+delivery — and the publish succeeds all the same, with no error to notice.
+
+#### When a keyed publish fails
+
+Pub/Sub suspends an ordering key the moment a publish on it fails with a non-retryable error. The
+SDK then rejects every message already queued on that key **and every future one**, until the key is
+explicitly resumed. Werken resumes it for you — but resuming is not the whole story:
+
+> **Retry the failures before publishing anything further on that key.** A resumed key accepts new
+> messages immediately, so a message published after the failure can go out ahead of the one that
+> failed. Werken cannot sequence that for you; only the caller knows what the failed message was.
+
+An outbox relay gets this right without trying: it claims rows in id order and republishes the
+unmarked ones on the next tick, so a failed message is always re-sent before anything behind it. An
+ad-hoc caller does not, and has to order the retry itself.
+
+The resume happens **after the whole batch has settled**, not from the failing publish's own error
+path. Within one `publishBatch` every message is queued before the first failure is observable, so
+resuming earlier could release a later message in that same batch ahead of the one that failed —
+the exact inversion `ordering` was turned on to prevent.
+
+That guarantee is per batch. A `publish` issued concurrently on the same key from elsewhere in the
+process is not sequenced against it, so the resume can release that one ahead of the failure you are
+about to retry — which is the case the caveat above exists to cover.
+
+Resuming needs `resumePublishing` on the `Topic`. The real SDK has it; a custom `createClient`
+returning a `TopicLike` without it still typechecks, and the key simply stays suspended.
 
 ### Batches
 
@@ -825,6 +865,120 @@ try {
   throw error;
 }
 ```
+
+Requests that failed before reaching the broker — an unresolvable topic, an empty `id` — land in
+`error.failures` alongside broker rejections, and `publishBatch` throws `PartialPublishError`
+whenever anything failed, including when _nothing_ succeeded. So that one `catch` is the complete
+recovery path; there is no second error type to handle.
+
+### Transactional outbox
+
+A service cannot publish to Pub/Sub and commit to its database atomically. The outbox pattern works
+around that: write the state change and an outbox row in **one** transaction, then let a separate
+relay publish the unpublished rows.
+
+The relay publishes first and marks second. That order is deliberate — it guarantees duplicates and
+forbids loss, and duplicates are the recoverable direction. What makes them harmless is generating
+the CloudEvents id **inside the ingest transaction** and storing it on the row, so a relay that
+crashes between publishing and marking republishes under the _same_ `ce-id` and consumer
+de-duplication collapses the two into one. Leave the id to be generated at publish time and that
+republish is a second, distinct event that nothing suppresses.
+
+**Ingest** — one transaction, and the id is part of the row:
+
+```ts
+await sql.transaction(async (tx) => {
+  await tx.query("update orders set status = $2 where id = $1", [orderId, "placed"]);
+  await tx.query("insert into outbox (event_id, type, subject, payload, created_at) values ($1, $2, $3, $4, now())", [
+    uuidv7(),
+    "com.example.order.placed.v1",
+    orderId,
+    JSON.stringify({ orderId }),
+  ]);
+});
+```
+
+**Relay** — claim, publish, mark:
+
+```ts
+await sql.transaction(async (tx) => {
+  const { rows } = await tx.query(
+    `select id, event_id, type, subject, payload, created_at
+       from outbox
+      where published_at is null
+      order by event_id
+      limit 100
+        for update skip locked`,
+  );
+  if (rows.length === 0) return;
+
+  const requests = rows.map((row) => ({
+    id: row.event_id, // the whole point: stable across a republish
+    type: row.type,
+    subject: row.subject,
+    data: row.payload,
+    ingestiontime: row.created_at, // when the platform learned of it, not when the relay got to it
+  }));
+
+  let publishedRows = rows;
+  try {
+    await publisher.publishBatch(requests);
+  } catch (error) {
+    if (!(error instanceof PartialPublishError)) throw error;
+    // `index` is the position in `requests`, which is the position in `rows`. This is what the
+    // index is for: without it there is no way to tell which rows reached the topic, and the only
+    // safe fallback would be to mark none and republish the whole batch — duplicating everything
+    // that already went out.
+    publishedRows = error.published.map(({ index }) => rows[index]);
+  }
+
+  if (publishedRows.length > 0) {
+    await tx.query("update outbox set published_at = now() where id = any($1)", [publishedRows.map((row) => row.id)]);
+  }
+});
+```
+
+Rows that failed keep `published_at is null` and are claimed again on the next tick. Because the
+claim is ordered by `event_id` and UUIDv7 sorts in generation order, a failed message is always
+re-sent before anything queued behind it — which is exactly what the
+[ordering caveat](#when-a-keyed-publish-fails) asks of you, satisfied for free by a single relay
+instance.
+
+`FOR UPDATE SKIP LOCKED` is what lets several relay replicas run without claiming the same rows, and
+it trades that ordering property away: replica B skips the rows replica A has locked and publishes a
+later message on the same key while A's failed ones wait for the next tick — and Pub/Sub does not
+order across distinct publisher clients regardless. One relay keeps the ordering; several buy
+throughput. Handlers still have to be idempotent: this narrows the duplicate window, it does not
+close it.
+
+### Extension attributes
+
+`extensions` becomes `ce-*` Pub/Sub message attributes, and Pub/Sub's per-message attribute limits
+are hard — they cannot be raised by a quota request:
+
+| Limit                  | Value      |
+| ---------------------- | ---------- |
+| Attributes per message | 100        |
+| Attribute key size     | 256 bytes  |
+| Attribute value size   | 1024 bytes |
+
+These are separate from the 10 MB message data limit. Two things eat into them before your first
+extension: Werken's own envelope spends up to 10 of the 100 attributes — `ce-specversion`, `ce-id`,
+`ce-source`, `ce-type`, `ce-datacontenttype`, `ce-subject`, `ce-time`, `ce-ingestiontime`,
+`ce-dataschema`, `ce-traceparent` — and the `ce-` prefix costs 3 bytes of every 256-byte key.
+
+**When structured metadata does not fit, move it into the payload.** Provenance records, quality
+scores and completeness metrics are the usual culprits: they are objects, and `extensions` is
+`Record<string, string>`, so the tempting move is to `JSON.stringify` one into a single attribute.
+
+That works until the 1024 bytes run out, and it costs you something specific in the meantime: **a
+Pub/Sub subscription filter cannot see inside a JSON string.** Filters match attributes by equality,
+prefix and presence against whole values — there is no JSON parsing. Putting `{"tier":"gold"}` in
+one attribute means no subscription can filter on the tier, which is precisely the capability binary
+content mode exists to provide.
+
+Keep in `extensions` what you might route or filter on: flat, small, and one value per attribute.
+Put the rest in the body, where it is neither capped at 1024 bytes nor pretending to be filterable.
 
 ## Observability
 
