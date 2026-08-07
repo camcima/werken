@@ -143,7 +143,12 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
   function topicFor(name: string): TopicLike {
     let topic = topics.get(name);
     if (topic === undefined) {
-      // The SDK ignores orderingKey unless the Topic itself was constructed with messageOrdering.
+      // messageOrdering is inert in the SDK as of 5.3.1: it is stored on the publisher's settings
+      // and never read, because the ordered queue is built from the message's own orderingKey.
+      // Passed regardless, since it is the documented way to declare the intent and a client that
+      // starts enforcing it again must not find it missing. Do not read its absence as "the key is
+      // ignored" — it is not, which is why a failed keyed publish must be resumed even with
+      // `ordering` off.
       topic = options.client.topic(name, options.ordering === true ? { messageOrdering: true } : undefined);
       topics.set(name, topic);
     }

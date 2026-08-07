@@ -790,7 +790,8 @@ who never tried.
 
 Ordering is **off** unless you ask for it. With `ordering: true` the publisher derives each message's
 ordering key from `subject` (an explicit `orderingKey` on the request still wins), and builds its
-`Topic` with `messageOrdering` — which the SDK requires, or it ignores the key entirely:
+`Topic` with `messageOrdering` — which declares the intent, though the SDK has not enforced it since
+at least 5.3.1:
 
 ```ts
 const publisher = createEventPublisher({
@@ -801,11 +802,14 @@ const publisher = createEventPublisher({
 });
 ```
 
-Without `ordering: true`, `subject` is not used as an ordering key. An explicit `orderingKey` on the
-request is still handed to the SDK, but the `Topic` was not built with `messageOrdering`, so nothing
-orders on it — and the publish succeeds all the same, with no error to notice. Ordering also needs
-message ordering enabled on the **subscription**, which is a broker-side setting Werken does not
-manage.
+Without `ordering: true`, `subject` is not used as an ordering key — but an explicit `orderingKey` on
+the request still is. The SDK builds its ordered queue from the key on the message alone, so those
+publishes are serialised per key and the key is suspended if one fails, exactly as with
+`ordering: true`. All the flag changes is whether Werken derives the key from `subject` for you.
+
+Ordered **delivery** is a separate matter: it needs message ordering enabled on the **subscription**,
+a broker-side setting Werken does not manage. Without it you get ordered publishing and unordered
+delivery — and the publish succeeds all the same, with no error to notice.
 
 #### When a keyed publish fails
 

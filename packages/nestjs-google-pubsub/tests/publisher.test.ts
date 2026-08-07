@@ -289,7 +289,8 @@ describe("ordering", () => {
     expect(published[0].orderingKey).toBe("custom");
   });
 
-  // The SDK ignores orderingKey unless the Topic itself was constructed with messageOrdering.
+  // messageOrdering is inert in the SDK as of 5.3.1, so this pins the option Werken passes, not any
+  // behaviour it buys — kept so a client that starts enforcing it again does not find it missing.
   test("constructs the topic with messageOrdering enabled", async () => {
     const { publisher, published } = publisherWith({ ordering: true });
     await publisher.publish({ type: TYPE, data: {}, subject: "thing-42" });

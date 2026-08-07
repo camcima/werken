@@ -1,7 +1,7 @@
 # Caller-supplied `ce-id`, `ingestiontime`, and ordering-key recovery — design
 
 - **Date:** 2026-08-07
-- **Status:** approved, not yet implemented
+- **Status:** implemented in [#4](https://github.com/camcima/werken/pull/4)
 - **Baseline:** v0.3.0 (`b47ae48`)
 
 ## Problem
