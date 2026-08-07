@@ -59,12 +59,16 @@ function publisherWith(overrides: Partial<Parameters<typeof createEventPublisher
  * the 1-based attempt number, letting a test fail some publishes in a batch and not others.
  */
 function failingClient(shouldFail: (attempt: number) => boolean = () => true) {
+  /** One entry per message that actually reached `publishMessage`, failure or not. */
+  const sent: Array<{ topic: string; orderingKey?: string }> = [];
+  /** One entry per `resumePublishing` call, so ordering-key recovery can be asserted. */
   const resumed: Array<{ topic: string; orderingKey: string }> = [];
   let attempt = 0;
   const client = {
     topic: vi.fn((topic: string) => ({
-      publishMessage: vi.fn(async () => {
+      publishMessage: vi.fn(async (m: { orderingKey?: string }) => {
         attempt++;
+        sent.push({ topic, orderingKey: m.orderingKey });
         if (shouldFail(attempt)) throw new Error(`publish ${attempt} failed`);
         return `msg-${attempt}`;
       }),
@@ -75,7 +79,24 @@ function failingClient(shouldFail: (attempt: number) => boolean = () => true) {
     subscription: vi.fn(),
     close: vi.fn(async () => {}),
   };
-  return { resumed, client: client as unknown as PubSubClientLike };
+  return { sent, resumed, client: client as unknown as PubSubClientLike };
+}
+
+/** A client that publishes fine on any key but "bad", and whose recovery throws on the way out. */
+function resumeThrowingClient() {
+  return {
+    topic: vi.fn(() => ({
+      publishMessage: vi.fn(async (m: { orderingKey?: string }) => {
+        if (m.orderingKey === "bad") throw new Error("publish failed");
+        return "msg-1";
+      }),
+      resumePublishing: vi.fn(() => {
+        throw new Error("resume failed");
+      }),
+    })),
+    subscription: vi.fn(),
+    close: vi.fn(async () => {}),
+  } as unknown as PubSubClientLike;
 }
 
 const originalEnv = process.env.NODE_ENV;
@@ -305,13 +326,13 @@ describe("ordering-key recovery", () => {
     const { resumed, client } = failingClient();
     const { publisher } = publisherWith({ client, ordering: true });
 
-    await publisher
-      .publishBatch([
+    await expect(
+      publisher.publishBatch([
         { type: TYPE, data: {}, subject: "thing-42" },
         { type: TYPE, data: {}, subject: "thing-42" },
         { type: TYPE, data: {}, subject: "other" },
-      ])
-      .catch(() => {});
+      ]),
+    ).rejects.toThrow(PartialPublishError);
 
     expect(resumed).toEqual([
       { topic: RESOLVED_TOPIC, orderingKey: "thing-42" },
@@ -359,6 +380,64 @@ describe("ordering-key recovery", () => {
     release!();
     await batch;
     expect(order).toEqual(["slow publish settled", "resumed k"]);
+  });
+
+  // Only a publish that reached the SDK can have suspended a key. Recomputing the destination from
+  // the request would resume one it never touched, and that is not a no-op: the SDK's resume drains
+  // a queue whose only batch is already in flight, deleting it, so the next publish on that key
+  // builds a fresh queue racing an outstanding RPC — the inversion ordering was turned on to stop.
+  test("does not resume a key whose publish never reached the SDK", async () => {
+    const { resumed, client } = failingClient();
+    const { publisher } = publisherWith({ client, ordering: true });
+
+    const error = await publisher
+      .publishBatch([
+        { type: TYPE, data: {}, subject: "attempted" },
+        { type: TYPE, data: {}, subject: "never-queued", id: "   " },
+      ])
+      .catch((e: unknown) => e);
+
+    // Both failed, but only one of them ever got as far as publishMessage.
+    expect((error as PartialPublishError).failures.map((f) => f.index)).toEqual([0, 1]);
+    expect(resumed).toEqual([{ topic: RESOLVED_TOPIC, orderingKey: "attempted" }]);
+  });
+
+  // `ordering: false` does not mean no ordered queue: the SDK picks its OrderedQueue on the
+  // message's orderingKey alone, so an explicit key suspends on failure even though the Topic was
+  // built without messageOrdering. Skipping the resume here would silence that key for good.
+  test("attaches and recovers an explicit ordering key with ordering off", async () => {
+    const { sent, resumed, client } = failingClient();
+    const { publisher } = publisherWith({ client, ordering: false });
+
+    await expect(publisher.publish({ type: TYPE, data: {}, orderingKey: "custom" })).rejects.toThrow(
+      "publish 1 failed",
+    );
+
+    expect(sent).toEqual([{ topic: RESOLVED_TOPIC, orderingKey: "custom" }]);
+    expect(resumed).toEqual([{ topic: RESOLVED_TOPIC, orderingKey: "custom" }]);
+  });
+
+  // Recovery must never replace the outcome it is recovering from. A throwing resumePublishing that
+  // propagated would take PartialPublishError.published with it, and the outbox relay rethrows
+  // anything that is not a PartialPublishError — rolling back and republishing what already went out.
+  test("keeps the partial-publish result when resumePublishing throws", async () => {
+    const { publisher } = publisherWith({ client: resumeThrowingClient(), ordering: true });
+
+    const error = await publisher
+      .publishBatch([
+        { type: TYPE, data: {}, subject: "good" },
+        { type: TYPE, data: {}, subject: "bad" },
+      ])
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(PartialPublishError);
+    expect((error as PartialPublishError).published).toEqual([{ index: 0, messageId: "msg-1" }]);
+  });
+
+  test("keeps the original publish error when resumePublishing throws", async () => {
+    const { publisher } = publisherWith({ client: resumeThrowingClient(), ordering: true });
+
+    await expect(publisher.publish({ type: TYPE, data: {}, subject: "bad" })).rejects.toThrow("publish failed");
   });
 
   // resumePublishing is optional on TopicLike so an existing custom client still satisfies the type.

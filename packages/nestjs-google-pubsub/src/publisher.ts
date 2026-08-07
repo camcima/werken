@@ -15,6 +15,9 @@ export interface PublishRequest<T> {
    *
    * CloudEvents 1.0 requires this to be unique per `source`. Nothing here enforces it, and nothing
    * could: a reused id is indistinguishable from a redelivery to every consumer downstream.
+   *
+   * Sent verbatim, whitespace and all — only the emptiness check trims. Consumers de-duplicate on
+   * the literal value, so a republish of the same stored id still collapses into one event.
    */
   id?: string;
   subject?: string;
@@ -169,28 +172,31 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
    */
   function resumeOrdering(destination: Destination): void {
     if (destination.orderingKey === undefined) return;
-    topicFor(destination.topicName).resumePublishing?.(destination.orderingKey);
+    try {
+      topicFor(destination.topicName).resumePublishing?.(destination.orderingKey);
+    } catch {
+      // Swallowed: recovery must never replace the outcome it is recovering from. `client.topic()`
+      // and `resumePublishing` are both caller-supplied, so a throw from either would surface in
+      // place of the publish error and take `PartialPublishError.published` with it — leaving an
+      // outbox relay to roll back and republish everything that already went out.
+    }
   }
 
-  function resumeFailed<T>(
-    requests: Array<PublishRequest<T>>,
-    failures: readonly PublishFailure[],
-    publishOptions?: PublishOptions,
-  ): void {
+  function resumeFailed(attempted: ReadonlyArray<Destination | undefined>, failures: readonly PublishFailure[]): void {
     // JSON rather than a delimiter, for the same reason `idempotencyKeyToString` uses it: a topic
     // name and an ordering key are both caller-controlled, so any separator either could contain
     // would flatten two distinct destinations to one string and skip a resume that was needed.
     const seen = new Set<string>();
     for (const failure of failures) {
-      let destination: Destination;
-      try {
-        destination = destinationFor(requests[failure.index], publishOptions);
-      } catch {
-        // Resolving the destination is itself one of the ways a request fails. If there is no
-        // destination, nothing was ever queued under a key, so nothing is suspended.
-        continue;
-      }
-      if (destination.orderingKey === undefined) continue;
+      // What the publish was attempted on, never a destination recomputed from the request. An
+      // empty id, a throwing `encode` and a datacontenttype that is not one all fail with a
+      // resolvable destination but nothing queued under its key, and resuming an untouched key is
+      // not a no-op: the SDK's resume drains a queue whose only batch has already been dispatched,
+      // deleting it, so the next publish on that key builds a fresh queue racing an outstanding
+      // RPC. It also stops a `topicResolver` that reads mutable config from naming a different
+      // topic on the way back, resuming a key nothing failed on and skipping the one that did.
+      const destination = attempted[failure.index];
+      if (destination?.orderingKey === undefined) continue;
 
       const seenKey = JSON.stringify([destination.topicName, destination.orderingKey]);
       if (seen.has(seenKey)) continue;
@@ -202,8 +208,9 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
   async function publishOne<T>(
     request: PublishRequest<T>,
     publishOptions: PublishOptions | undefined,
-    // False from publishBatch, which resumes once per key after the whole batch has settled.
-    resumeOnFailure: boolean,
+    // Called with the destination this publish is about to be attempted on, and only then, so both
+    // callers recover from what was reached rather than from what can be recomputed afterwards.
+    recordAttempt: (destination: Destination) => void,
   ): Promise<string> {
     // Rejected rather than defaulted. A silent fallback to uuidv7() would hand a fresh id to a
     // caller who believes they pinned a stable one — worse off than a caller who never tried, and
@@ -240,29 +247,47 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
       extensions: request.extensions ?? {},
     });
 
-    try {
-      const messageId = await topicFor(destination.topicName).publishMessage({
-        data,
-        attributes,
-        ...(destination.orderingKey === undefined ? {} : { orderingKey: destination.orderingKey }),
-      });
-      return String(messageId);
-    } catch (error) {
-      if (resumeOnFailure) resumeOrdering(destination);
-      throw error;
-    }
+    const topic = topicFor(destination.topicName);
+    // Recorded with the Topic in hand and nothing left between here and the publish: from this
+    // point on the SDK can have queued the message under the key, which is the only condition
+    // under which resuming that key is a recovery rather than a hazard.
+    recordAttempt(destination);
+
+    const messageId = await topic.publishMessage({
+      data,
+      attributes,
+      ...(destination.orderingKey === undefined ? {} : { orderingKey: destination.orderingKey }),
+    });
+    return String(messageId);
   }
 
   return {
-    // Wrapped rather than passed by reference, so publishOne's internal resume flag stays off the
+    // Wrapped rather than passed by reference, so publishOne's internal attempt sink stays off the
     // public signature.
-    publish: <T>(request: PublishRequest<T>, publishOptions?: PublishOptions) =>
-      publishOne(request, publishOptions, true),
+    async publish<T>(request: PublishRequest<T>, publishOptions?: PublishOptions) {
+      let attempted: Destination | undefined;
+      try {
+        return await publishOne(request, publishOptions, (destination) => {
+          attempted = destination;
+        });
+      } catch (error) {
+        // Unset means the failure landed before `publishMessage`, so no key was ever suspended.
+        if (attempted !== undefined) resumeOrdering(attempted);
+        throw error;
+      }
+    },
     async publishBatch(requests, publishOptions) {
+      const attempted = new Array<Destination | undefined>(requests.length);
       // Every publish is issued before any is awaited. Awaiting each in turn would flush a batch of
       // one — the SDK batches what is queued together — while the calls still happen in request
       // order, which is what preserves ordering per ordering key.
-      const settled = await Promise.allSettled(requests.map((request) => publishOne(request, publishOptions, false)));
+      const settled = await Promise.allSettled(
+        requests.map((request, index) =>
+          publishOne(request, publishOptions, (destination) => {
+            attempted[index] = destination;
+          }),
+        ),
+      );
 
       const failures = settled.flatMap<PublishFailure>((result, index) =>
         result.status === "rejected" ? [{ index, type: requests[index].type, cause: result.reason }] : [],
@@ -271,7 +296,7 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
         // Resumed only now, with every publish settled. The whole batch is queued on a key before
         // the first failure is observable, so lifting the suspension any earlier could release a
         // later message in this same batch ahead of the one that failed.
-        resumeFailed(requests, failures, publishOptions);
+        resumeFailed(attempted, failures);
 
         const published = settled.flatMap<PublishSuccess>((result, index) =>
           result.status === "fulfilled" ? [{ index, messageId: result.value }] : [],
