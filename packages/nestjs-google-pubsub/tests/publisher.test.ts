@@ -108,6 +108,28 @@ describe("envelope construction", () => {
     expect([...ids].sort()).toEqual(ids);
   });
 
+  // The outbox pattern mints the id inside the ingest transaction and stores it on the row, so a
+  // relay that crashes between publishing and marking republishes under the same id and consumer
+  // de-duplication collapses the two. Generated here instead, a republish is a second event.
+  test("lets the caller supply the event id", async () => {
+    const { publisher, published } = publisherWith();
+    await publisher.publish({ type: TYPE, data: {}, id: "01927f9a-0000-7000-8000-000000000001" });
+
+    expect(published[0].attributes["ce-id"]).toBe("01927f9a-0000-7000-8000-000000000001");
+  });
+
+  // Falling back to uuidv7() would reinstate the exact duplicate this option exists to prevent, and
+  // do it silently: toPubSubAttributes writes ce-id verbatim, so an empty one is not caught until
+  // the consumer rejects the envelope as missing-attribute, blaming the wrong side of the wire.
+  test.each([
+    ["empty", ""],
+    ["whitespace-only", "   "],
+  ])("rejects an %s id rather than generating one behind the caller's back", async (_label, id) => {
+    const { publisher } = publisherWith();
+
+    await expect(publisher.publish({ type: TYPE, data: {}, id })).rejects.toThrow(/PublishRequest\.id/);
+  });
+
   test("sets the configured source, and lets a request override it", async () => {
     const { publisher, published } = publisherWith();
     await publisher.publish({ type: TYPE, data: {} });

@@ -7,6 +7,16 @@ import { applyResourcePrefix, assertResourcePrefixSafe } from "./resource-name.j
 export interface PublishRequest<T> {
   type: string;
   data: T;
+  /**
+   * Overrides the generated event id. Supply one when the id has to survive a republish: a
+   * transactional outbox mints it inside the ingest transaction and stores it on the row, so a
+   * relay that crashes between publishing and marking republishes under the same id and consumer
+   * de-duplication collapses the two into one. Left to generate, that republish is a second event.
+   *
+   * CloudEvents 1.0 requires this to be unique per `source`. Nothing here enforces it, and nothing
+   * could: a reused id is indistinguishable from a redelivery to every consumer downstream.
+   */
+  id?: string;
   subject?: string;
   /** Overrides the configured source. Rarely needed. */
   source?: string;
@@ -189,6 +199,15 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
     // False from publishBatch, which resumes once per key after the whole batch has settled.
     resumeOnFailure: boolean,
   ): Promise<string> {
+    // Rejected rather than defaulted. A silent fallback to uuidv7() would hand a fresh id to a
+    // caller who believes they pinned a stable one — worse off than a caller who never tried, and
+    // invisible until two events show up downstream for one state change.
+    if (request.id !== undefined && request.id.trim() === "") {
+      throw new Error(
+        "werken: PublishRequest.id was supplied but is empty. Omit it to generate one, or pass a non-empty id.",
+      );
+    }
+
     const destination = destinationFor(request, publishOptions);
 
     const at = now();
@@ -201,7 +220,7 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
 
     const attributes = toPubSubAttributes({
       specversion: "1.0",
-      id: uuidv7(),
+      id: request.id ?? uuidv7(),
       source: request.source ?? options.source,
       type: request.type,
       subject: request.subject,
