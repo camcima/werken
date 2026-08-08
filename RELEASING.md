@@ -16,8 +16,12 @@ Both phases use [release-it](https://github.com/release-it/release-it) +
   the root and both packages, generates the `CHANGELOG.md` section, and commits — but does **not**
   tag, push, or publish.
 - **Phase 2** uses [`.release-it.publish.json`](./.release-it.publish.json) with `--no-increment`
-  (no bump): it tags `v<version>` and runs `pnpm -r publish`. You then push the tag. No GitHub
-  release is created — the tag is the source of truth and the CHANGELOG holds the notes.
+  (no bump): it tags `v<version>`, **pushes the tag itself** (`git.push`), creates a **GitHub
+  release** named `v<version>` (`github.release`), and publishes through
+  [`scripts/publish.sh`](./scripts/publish.sh). release-it's own npm plugin is disabled
+  (`npm.publish: false`) so the publish goes through that script's `--filter "./packages/*"`
+  allowlist, which is what stops an example that forgot `"private": true` from reaching npm.
+  The CHANGELOG holds the notes; the GitHub release body is generated from it.
 
 The internal dependency needs no re-pinning. `@werken/nestjs-google-pubsub` depends on
 `@werken/cloudevents` as `workspace:^`, which pnpm rewrites to `^<version>` at publish time.
@@ -56,14 +60,24 @@ where there is nothing to compute from.
 
 ## Phase 1 — prepare the version bump
 
-Run from an up-to-date `main`. Replace `0.1.0` with your target version.
+Run from an up-to-date `main`. Set `VERSION` to the release you are cutting — deliberately left
+empty, so pasting this unedited does nothing rather than cutting whatever number the docs happened
+to carry.
+
+The bump is gated on `VERSION` rather than merely checked. `${VERSION:?...}` on its own line would
+not do: it aborts a script, but an **interactive** shell only prints the message and carries on to
+the next line — which is the paste this guard exists for.
 
 ```bash
-VERSION=0.1.0
+VERSION= # ← set this first, e.g. VERSION=0.4.0
 
 # Prepare-only: bumps the root and both packages, writes the CHANGELOG section, and commits
 # "chore: release v$VERSION". Nothing is tagged, pushed, or published.
-pnpm exec release-it $VERSION --ci
+if [ -z "$VERSION" ]; then
+  echo "VERSION is empty — set it to the release you are cutting, e.g. VERSION=0.4.0" >&2
+else
+  pnpm exec release-it "$VERSION" --ci
+fi
 ```
 
 Verify, then push:
@@ -75,25 +89,47 @@ git push origin main
 
 ## Phase 2 — tag & publish
 
+Phase 2 takes no version argument. `--no-increment` means "publish what Phase 1 already committed",
+so there is nothing here to keep in sync with the version — and nothing to get wrong.
+
+The simplest path prompts for the one-time password interactively, which avoids racing its ~30
+second expiry:
+
 ```bash
-VERSION=0.1.0
 git checkout main
 git pull
 pnpm install --frozen-lockfile
 pnpm run build && pnpm test          # dist/ must exist — `files` ships only dist
 
-# Tag v$VERSION locally and publish both packages with your local npm credentials.
-# --no-increment means "don't bump" — the version is already committed from Phase 1.
-NPM_OTP=123456 pnpm exec release-it --no-increment --ci --config .release-it.publish.json
-
-# Push the tag to record the release. No workflow runs on the tag.
-git push origin v$VERSION
+# Prompts before tagging, pushing, creating the GitHub release, and publishing.
+pnpm run release:publish
 ```
+
+For automation, pass the code in and skip the prompts. Generate it immediately before running:
+
+```bash
+NPM_OTP=123456 pnpm exec release-it --no-increment --ci --config .release-it.publish.json
+```
+
+Either way release-it pushes the tag and creates the GitHub release — there is no separate
+`git push origin v<version>` step.
 
 Verify:
 
+Read the version back out of the repo rather than retyping it. Phase 1 committed it, so this cannot
+disagree with what was just released — and a checklist that silently checks the wrong version, or
+an empty one, is worse than no checklist.
+
 ```bash
+VERSION=$(node -p "require('./package.json').version")
+
 for p in cloudevents nestjs-google-pubsub; do printf "@werken/%s: " "$p"; npm view "@werken/$p" version; done
+git ls-remote --tags origin "v$VERSION"   # the tag reached the remote
+gh release view "v$VERSION" --json name,isDraft
+
+# What actually shipped, from the registry rather than the local build — a stale or missing dist
+# publishes silently and cannot be undone.
+npm pack "@werken/nestjs-google-pubsub@$VERSION" --silent | xargs tar -tzf | head
 ```
 
 ## Footguns
