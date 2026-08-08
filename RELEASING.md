@@ -61,16 +61,23 @@ where there is nothing to compute from.
 ## Phase 1 — prepare the version bump
 
 Run from an up-to-date `main`. Set `VERSION` to the release you are cutting — deliberately left
-empty so pasting this unedited stops rather than silently cutting whatever number the docs happened
+empty, so pasting this unedited does nothing rather than cutting whatever number the docs happened
 to carry.
 
+The bump is gated on `VERSION` rather than merely checked. `${VERSION:?...}` on its own line would
+not do: it aborts a script, but an **interactive** shell only prints the message and carries on to
+the next line — which is the paste this guard exists for.
+
 ```bash
-VERSION=
-: "${VERSION:?set VERSION to the release you are cutting, e.g. VERSION=0.4.0}"
+VERSION= # ← set this first, e.g. VERSION=0.4.0
 
 # Prepare-only: bumps the root and both packages, writes the CHANGELOG section, and commits
 # "chore: release v$VERSION". Nothing is tagged, pushed, or published.
-pnpm exec release-it "$VERSION" --ci
+if [ -z "$VERSION" ]; then
+  echo "VERSION is empty — set it to the release you are cutting, e.g. VERSION=0.4.0" >&2
+else
+  pnpm exec release-it "$VERSION" --ci
+fi
 ```
 
 Verify, then push:
@@ -109,7 +116,13 @@ Either way release-it pushes the tag and creates the GitHub release — there is
 
 Verify:
 
+Read the version back out of the repo rather than retyping it. Phase 1 committed it, so this cannot
+disagree with what was just released — and a checklist that silently checks the wrong version, or
+an empty one, is worse than no checklist.
+
 ```bash
+VERSION=$(node -p "require('./package.json').version")
+
 for p in cloudevents nestjs-google-pubsub; do printf "@werken/%s: " "$p"; npm view "@werken/$p" version; done
 git ls-remote --tags origin "v$VERSION"   # the tag reached the remote
 gh release view "v$VERSION" --json name,isDraft
