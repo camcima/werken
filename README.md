@@ -826,9 +826,19 @@ unmarked ones on the next tick, so a failed message is always re-sent before any
 ad-hoc caller does not, and has to order the retry itself.
 
 The resume happens **after the whole batch has settled**, not from the failing publish's own error
-path. Within one `publishBatch` every message is queued before the first failure is observable, so
-resuming earlier could release a later message in that same batch ahead of the one that failed —
-the exact inversion `ordering` was turned on to prevent.
+path. Within one `publishBatch` every message that reaches the SDK is queued before the first
+failure is observable, so resuming earlier could release a later message in that same batch ahead
+of the one that failed — the exact inversion `ordering` was turned on to prevent.
+
+A publish can also fail **before** anything reaches the SDK: an unresolvable topic, an empty `id`,
+a throwing `encode`, a `datacontenttype` that is not a media type. Nothing is queued then, so
+nothing suspends the key and the SDK has nothing to hold the key's later messages behind.
+`publishBatch` holds them back itself: later same-batch requests on that key are not attempted and
+land in `failures` with an `OrderingKeyBlockedError` as their `cause`, naming the request that
+blocked the key. When the failed request's topic resolved, the hold covers that one (topic, key)
+stream — the same key on another topic is a different stream and is not held. When the topic never
+resolved, the stream cannot be named, so the key is held on every topic: a false hold is a
+retryable failure, a false pass is a silent inversion.
 
 That guarantee is per batch. A `publish` issued concurrently on the same key from elsewhere in the
 process is not sequenced against it, so the resume can release that one ahead of the failure you are
@@ -839,8 +849,9 @@ returning a `TopicLike` without it still typechecks, and the key simply stays su
 
 ### Batches
 
-`publishBatch` issues every publish before awaiting any — in request order, which is what preserves
-ordering per ordering key — and returns the message ids:
+`publishBatch` issues every publish before awaiting any — in request order, which together with
+[holding back keys that failed pre-broker](#when-a-keyed-publish-fails) is what preserves ordering
+per ordering key — and returns the message ids:
 
 ```ts
 const ids = await publisher.publishBatch([
@@ -861,15 +872,27 @@ try {
   if (error instanceof PartialPublishError) {
     error.published; // [{ index, messageId }] — already sent, do not resend
     error.failures; // [{ index, type, cause }] — safe to retry
+    for (const { cause } of error.failures) {
+      if (cause instanceof OrderingKeyBlockedError) {
+        // Held back, not broken: this request was never attempted and there is nothing
+        // to fix on it. Retrying the failures in index order clears it along with the
+        // failure that blocked it.
+        cause.orderingKey; // the held stream
+        cause.blockedBy; // { index, type } of the request whose failure blocked it
+      }
+    }
   }
   throw error;
 }
 ```
 
-Requests that failed before reaching the broker — an unresolvable topic, an empty `id` — land in
-`error.failures` alongside broker rejections, and `publishBatch` throws `PartialPublishError`
-whenever anything failed, including when _nothing_ succeeded. So that one `catch` is the complete
-recovery path; there is no second error type to handle.
+Requests that failed before reaching the broker — an unresolvable topic, an empty `id`, a throwing
+`encode` — land in `error.failures` alongside broker rejections, and so do the requests
+`publishBatch` [declined to attempt](#when-a-keyed-publish-fails) because such a failure blocked
+their ordering key; those carry an `OrderingKeyBlockedError` as their `cause`. `publishBatch`
+throws `PartialPublishError` whenever anything failed, including when _nothing_ succeeded. So that
+one `catch` is the complete recovery path; there is no second thrown type to handle — and retrying
+the failures in index order re-sends every key's stream in order.
 
 ### Transactional outbox
 

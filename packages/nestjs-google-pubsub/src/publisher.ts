@@ -48,6 +48,12 @@ export interface EventPublisher {
    * Publishes every request, in order. Throws {@link PartialPublishError} if any failed — the
    * successes are already on the topic by then, so the error names them rather than leaving the
    * caller to guess.
+   *
+   * Within the batch, a request whose predecessor on the same ordering key failed before anything
+   * reached the SDK is not attempted: it fails with {@link OrderingKeyBlockedError} so a later
+   * message can never overtake one that was never sent. That hold is scoped to the batch — across
+   * calls, re-sending a failed message before the key's later ones is the caller's job (the
+   * README's ordering caveat), which a single outbox relay satisfies by construction.
    */
   publishBatch<T>(requests: Array<PublishRequest<T>>, options?: PublishOptions): Promise<string[]>;
 }
@@ -62,6 +68,11 @@ export interface PublishSuccess {
 export interface PublishFailure {
   readonly index: number;
   readonly type: string;
+  /**
+   * Why. Usually whatever the failing stage threw; an {@link OrderingKeyBlockedError} when this
+   * request was never attempted because an earlier failure blocked its ordering key. Narrow with
+   * `instanceof` to tell the two apart — only the first kind has anything to fix.
+   */
   readonly cause: unknown;
 }
 
@@ -84,6 +95,34 @@ export class PartialPublishError extends Error {
       { cause: failures[0]?.cause },
     );
     this.name = "PartialPublishError";
+  }
+}
+
+/**
+ * Raised for a request that `publishBatch` declined to attempt, because an earlier request in the
+ * same batch failed on the same ordering key before anything reached the SDK.
+ *
+ * A failure the SDK observes suspends the key, and the SDK then fails everything queued behind it —
+ * per-key order holds by itself. A failure *before* the SDK — an unresolvable topic, an empty id, a
+ * throwing `encode`, a datacontenttype that is not one — queues nothing and suspends nothing, so
+ * without this hold the batch's next request on the key would publish straight past the failure:
+ * for a state machine per entity, a `cleared` whose `breached` never went out, and nothing
+ * downstream errors. Held-back requests land in {@link PartialPublishError.failures} with this as
+ * the cause, so a caller that retries failures in index order re-sends the key's stream in order
+ * without special-casing anything.
+ */
+export class OrderingKeyBlockedError extends Error {
+  constructor(
+    readonly orderingKey: string,
+    /** Index and event type of the earlier request whose failure blocked the key. */
+    readonly blockedBy: { readonly index: number; readonly type: string },
+  ) {
+    super(
+      `werken: not attempted: request ${blockedBy.index} (${blockedBy.type}) failed before anything ` +
+        `was queued on ordering key ${JSON.stringify(orderingKey)}, so this request was held back to ` +
+        "preserve per-key order. Retry the failures in index order.",
+    );
+    this.name = "OrderingKeyBlockedError";
   }
 }
 
@@ -155,6 +194,13 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
     return topic;
   }
 
+  // Separate from destinationFor because publishBatch needs it when destinationFor throws: the
+  // topic is unknowable then, but the key is still what decides which later requests to hold back.
+  function orderingKeyFor<T>(request: PublishRequest<T>): string | undefined {
+    const key = options.ordering === true ? (request.orderingKey ?? request.subject) : request.orderingKey;
+    return key === undefined || key === "" ? undefined : key;
+  }
+
   function destinationFor<T>(request: PublishRequest<T>, publishOptions?: PublishOptions): Destination {
     const resolved = publishOptions?.topic ?? options.topicResolver(request.type);
     if (resolved === undefined || resolved === "") {
@@ -163,10 +209,9 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
           "Add it to the topic resolver, or pass an explicit topic.",
       );
     }
-    const key = options.ordering === true ? (request.orderingKey ?? request.subject) : request.orderingKey;
     return {
       topicName: applyResourcePrefix(resolved, options.resourcePrefix),
-      orderingKey: key === undefined || key === "" ? undefined : key,
+      orderingKey: orderingKeyFor(request),
     };
   }
 
@@ -210,13 +255,22 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
     }
   }
 
-  async function publishOne<T>(
-    request: PublishRequest<T>,
-    publishOptions: PublishOptions | undefined,
-    // Called with the destination this publish is about to be attempted on, and only then, so both
-    // callers recover from what was reached rather than from what can be recomputed afterwards.
-    recordAttempt: (destination: Destination) => void,
-  ): Promise<string> {
+  /** A request past every failure point that precedes the SDK: validated, encoded, Topic in hand. */
+  interface PreparedPublish {
+    readonly destination: Destination;
+    readonly topic: TopicLike;
+    readonly data: Buffer;
+    readonly attributes: Record<string, string>;
+  }
+
+  /**
+   * Everything that can fail before the SDK sees the message, in one deliberately synchronous unit.
+   * A failure here queues nothing, so the SDK will never suspend the key — the only thing that can
+   * keep the key's later requests from overtaking is publishBatch's own issue pass, and that pass
+   * can only see failures that surface *during* it. Folded into an async function, the same throw
+   * would arrive as a rejection after every later request had already been issued.
+   */
+  function prepareOne<T>(request: PublishRequest<T>, destination: Destination): PreparedPublish {
     // Rejected rather than defaulted. A silent fallback to uuidv7() would hand a fresh id to a
     // caller who believes they pinned a stable one — worse off than a caller who never tried, and
     // invisible until two events show up downstream for one state change.
@@ -225,8 +279,6 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
         "werken: PublishRequest.id was supplied but is empty. Omit it to generate one, or pass a non-empty id.",
       );
     }
-
-    const destination = destinationFor(request, publishOptions);
 
     const at = now();
 
@@ -252,18 +304,40 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
       extensions: request.extensions ?? {},
     });
 
-    const topic = topicFor(destination.topicName);
+    return { destination, topic: topicFor(destination.topicName), data, attributes };
+  }
+
+  /**
+   * Hands a prepared request to the SDK. Deliberately not `async`, for the same reason prepareOne
+   * is synchronous: a `publishMessage` that throws synchronously — a custom TopicLike can — queued
+   * nothing either, and publishBatch needs that throw during its issue pass. An async wrapper would
+   * fold it into the returned promise, indistinguishable from a broker-side failure that the SDK
+   * answers by suspending the key.
+   */
+  function sendPrepared(prepared: PreparedPublish, recordAttempt: (destination: Destination) => void): Promise<string> {
+    const { destination } = prepared;
     // Recorded with the Topic in hand and nothing left between here and the publish: from this
     // point on the SDK can have queued the message under the key, which is the only condition
     // under which resuming that key is a recovery rather than a hazard.
     recordAttempt(destination);
 
-    const messageId = await topic.publishMessage({
-      data,
-      attributes,
-      ...(destination.orderingKey === undefined ? {} : { orderingKey: destination.orderingKey }),
-    });
-    return String(messageId);
+    return Promise.resolve(
+      prepared.topic.publishMessage({
+        data: prepared.data,
+        attributes: prepared.attributes,
+        ...(destination.orderingKey === undefined ? {} : { orderingKey: destination.orderingKey }),
+      }),
+    ).then((messageId) => String(messageId));
+  }
+
+  async function publishOne<T>(
+    request: PublishRequest<T>,
+    publishOptions: PublishOptions | undefined,
+    // Called with the destination this publish is about to be attempted on, and only then, so both
+    // callers recover from what was reached rather than from what can be recomputed afterwards.
+    recordAttempt: (destination: Destination) => void,
+  ): Promise<string> {
+    return sendPrepared(prepareOne(request, destinationFor(request, publishOptions)), recordAttempt);
   }
 
   return {
@@ -283,15 +357,64 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
     },
     async publishBatch(requests, publishOptions) {
       const attempted = new Array<Destination | undefined>(requests.length);
+
+      // The first pre-queue failure per ordering key. A failure the SDK observes suspends the key
+      // and fails everything queued behind it; one it never sees queues nothing, and only this pass
+      // declining to issue the key's later requests stands between that and a same-key overtake.
+      // Two maps because ordering is scoped to (topic, key) — the same key on another topic is a
+      // different stream, not held — except that a request whose topic never resolved belongs to a
+      // stream that cannot be named, so its key is held on every topic: a false hold is a retryable
+      // failure, a false pass is a silent inversion. JSON rather than a delimiter for the pair, for
+      // the same reason resumeFailed uses it.
+      const blockedOnTopic = new Map<string, { index: number; type: string }>();
+      const blockedEverywhere = new Map<string, { index: number; type: string }>();
+
       // Every publish is issued before any is awaited. Awaiting each in turn would flush a batch of
       // one — the SDK batches what is queued together — while the calls still happen in request
-      // order, which is what preserves ordering per ordering key.
+      // order, which — together with the hold-back for failures the SDK never sees — is what
+      // preserves ordering per ordering key.
       const settled = await Promise.allSettled(
-        requests.map((request, index) =>
-          publishOne(request, publishOptions, (destination) => {
-            attempted[index] = destination;
-          }),
-        ),
+        requests.map((request, index): Promise<string> => {
+          let destination: Destination;
+          try {
+            destination = destinationFor(request, publishOptions);
+          } catch (error) {
+            const key = orderingKeyFor(request);
+            // has-guard: a second unroutable request on the key must not usurp the first as the
+            // named blocker.
+            if (key !== undefined && !blockedEverywhere.has(key)) {
+              blockedEverywhere.set(key, { index, type: request.type });
+            }
+            return Promise.reject(error);
+          }
+
+          const { orderingKey } = destination;
+          if (orderingKey !== undefined) {
+            const blocker =
+              blockedEverywhere.get(orderingKey) ??
+              blockedOnTopic.get(JSON.stringify([destination.topicName, orderingKey]));
+            if (blocker !== undefined) {
+              // Declined before prepareOne, so a held-back request never runs the caller's encode.
+              return Promise.reject(new OrderingKeyBlockedError(orderingKey, blocker));
+            }
+          }
+
+          try {
+            return sendPrepared(prepareOne(request, destination), (attemptedOn) => {
+              attempted[index] = attemptedOn;
+            });
+          } catch (error) {
+            // A synchronous throw means nothing reached the SDK's queue — prepareOne by
+            // construction, and a synchronously-throwing publishMessage had nothing accepted
+            // either — so nothing will suspend this key broker-side: hold it here. No has-guard:
+            // a second request on the pair is rejected by the blocked check above, so this write
+            // is always the pair's first.
+            if (orderingKey !== undefined) {
+              blockedOnTopic.set(JSON.stringify([destination.topicName, orderingKey]), { index, type: request.type });
+            }
+            return Promise.reject(error);
+          }
+        }),
       );
 
       const failures = settled.flatMap<PublishFailure>((result, index) =>
