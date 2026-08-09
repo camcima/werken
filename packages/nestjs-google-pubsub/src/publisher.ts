@@ -68,6 +68,11 @@ export interface PublishSuccess {
 export interface PublishFailure {
   readonly index: number;
   readonly type: string;
+  /**
+   * Why. Usually whatever the failing stage threw; an {@link OrderingKeyBlockedError} when this
+   * request was never attempted because an earlier failure blocked its ordering key. Narrow with
+   * `instanceof` to tell the two apart — only the first kind has anything to fix.
+   */
   readonly cause: unknown;
 }
 

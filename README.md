@@ -872,6 +872,15 @@ try {
   if (error instanceof PartialPublishError) {
     error.published; // [{ index, messageId }] — already sent, do not resend
     error.failures; // [{ index, type, cause }] — safe to retry
+    for (const { cause } of error.failures) {
+      if (cause instanceof OrderingKeyBlockedError) {
+        // Held back, not broken: this request was never attempted and there is nothing
+        // to fix on it. Retrying the failures in index order clears it along with the
+        // failure that blocked it.
+        cause.orderingKey; // the held stream
+        cause.blockedBy; // { index, type } of the request whose failure blocked it
+      }
+    }
   }
   throw error;
 }
