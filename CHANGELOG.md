@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.1](https://github.com/camcima/werken/compare/v0.4.0...v0.4.1) (2026-08-09)
+
+### Bug Fixes
+
+* **publisher:** hold back an ordering key in-batch after a pre-queue failure ([efaed79](https://github.com/camcima/werken/commit/efaed791a506d817f1d066ecf6f526ada98efd99))
+
 ## [0.4.0](https://github.com/camcima/werken/compare/v0.3.0...v0.4.0) (2026-08-07)
 
 ### Features

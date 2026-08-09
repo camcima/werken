@@ -1,6 +1,6 @@
 {
   "name": "@werken/example-publisher",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "type": "module",
   "description": "Worked example: publishing CloudEvents to a schema-attached Pub/Sub topic.",
