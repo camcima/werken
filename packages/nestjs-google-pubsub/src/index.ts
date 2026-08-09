@@ -33,7 +33,7 @@ export type {
 // Publishing events
 // ---------------------------------------------------------------------------
 
-export { createEventPublisher, PartialPublishError } from "./publisher.js";
+export { createEventPublisher, OrderingKeyBlockedError, PartialPublishError } from "./publisher.js";
 export type {
   EncodedPayload,
   EventPublisher,

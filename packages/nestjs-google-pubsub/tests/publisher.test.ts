@@ -3,7 +3,7 @@ import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-ho
 import { W3CTraceContextPropagator } from "@opentelemetry/core";
 import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { PartialPublishError, createEventPublisher } from "@werken/nestjs-google-pubsub";
+import { OrderingKeyBlockedError, PartialPublishError, createEventPublisher } from "@werken/nestjs-google-pubsub";
 import type { PubSubClientLike } from "@werken/nestjs-google-pubsub";
 
 const TYPE = "com.example.thing.happened.v1";
@@ -456,6 +456,200 @@ describe("ordering-key recovery", () => {
     const { publisher } = publisherWith({ client, ordering: true });
 
     await expect(publisher.publish({ type: TYPE, data: {}, subject: "thing-42" })).rejects.toThrow("boom");
+  });
+});
+
+describe("holding back a key after a pre-queue failure", () => {
+  /** Poisons the first request whose payload says so; passes everything else through as JSON. */
+  const poisonEncode = (_type: string, data: unknown) => {
+    if ((data as { poison?: boolean }).poison === true) throw new Error("schema mismatch");
+    return Buffer.from(JSON.stringify(data));
+  };
+
+  // A request that fails before `publishMessage` never queues anything, so the SDK never suspends
+  // its key — and without help the next request on that key publishes right past the failure. For
+  // a state machine per entity that is a silent inversion: consumers see `cleared` for a `breached`
+  // they never got.
+  test("holds back a later request on a key whose earlier request failed before reaching the SDK", async () => {
+    const { publisher, published } = publisherWith({ ordering: true, encode: poisonEncode });
+
+    const error = await publisher
+      .publishBatch([
+        { type: TYPE, data: { poison: true }, subject: "SCL" },
+        { type: TYPE, data: {}, subject: "SCL" },
+        { type: TYPE, data: {}, subject: "GRU" },
+      ])
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(PartialPublishError);
+    const partial = error as PartialPublishError;
+    expect(partial.failures.map((f) => f.index)).toEqual([0, 1]);
+    expect(published.map((p) => p.orderingKey)).toEqual(["GRU"]);
+  });
+
+  // Pub/Sub scopes ordering to (topic, key): the same key on another topic is a different stream,
+  // so holding it back would fail a message the guarantee never covered.
+  test("does not hold back the same key on a different topic when the failed request's topic was known", async () => {
+    const { publisher, published } = publisherWith({ ordering: true, encode: poisonEncode });
+
+    const error = await publisher
+      .publishBatch([
+        { type: "com.example.a.v1", data: { poison: true }, orderingKey: "SCL" },
+        { type: "com.example.b.v1", data: {}, orderingKey: "SCL" },
+      ])
+      .catch((e: unknown) => e);
+
+    expect((error as PartialPublishError).failures.map((f) => f.index)).toEqual([0]);
+    expect(published.map((p) => ({ topic: p.topic, orderingKey: p.orderingKey }))).toEqual([
+      { topic: "com-example-b-v1", orderingKey: "SCL" },
+    ]);
+  });
+
+  // When the topic never resolved, which stream the failed request belonged to is unknowable — so
+  // every stream with that key has to be held. A false hold is a retryable failure; a false pass is
+  // a silent inversion.
+  test("holds back the key on every topic when the failed request's topic never resolved", async () => {
+    const { publisher, published } = publisherWith({
+      ordering: true,
+      topicResolver: (type: string) => (type === "com.example.unroutable.v1" ? undefined : type.replaceAll(".", "-")),
+    });
+
+    const error = await publisher
+      .publishBatch([
+        { type: "com.example.unroutable.v1", data: {}, subject: "SCL" },
+        { type: TYPE, data: {}, subject: "SCL" },
+        { type: TYPE, data: {}, subject: "GRU" },
+      ])
+      .catch((e: unknown) => e);
+
+    expect((error as PartialPublishError).failures.map((f) => f.index)).toEqual([0, 1]);
+    expect(published.map((p) => p.orderingKey)).toEqual(["GRU"]);
+  });
+
+  test("a pre-queue failure on an unkeyed request holds nothing back", async () => {
+    const { publisher, published } = publisherWith({ ordering: true, encode: poisonEncode });
+
+    const error = await publisher
+      .publishBatch([
+        { type: TYPE, data: { poison: true } },
+        { type: TYPE, data: {}, subject: "SCL" },
+        { type: TYPE, data: {} },
+      ])
+      .catch((e: unknown) => e);
+
+    expect((error as PartialPublishError).failures.map((f) => f.index)).toEqual([0]);
+    expect(published).toHaveLength(2);
+  });
+
+  // The SDK's queue is keyed on the message's orderingKey alone, so the hold-back has to engage for
+  // an explicit key even when `ordering` is off — same reason the resume does.
+  test("holds back an explicit ordering key with ordering off", async () => {
+    const { publisher, published } = publisherWith({ ordering: false, encode: poisonEncode });
+
+    const error = await publisher
+      .publishBatch([
+        { type: TYPE, data: { poison: true }, orderingKey: "custom" },
+        { type: TYPE, data: {}, orderingKey: "custom" },
+      ])
+      .catch((e: unknown) => e);
+
+    expect((error as PartialPublishError).failures.map((f) => f.index)).toEqual([0, 1]);
+    expect(published).toHaveLength(0);
+  });
+
+  // A `publishMessage` that throws synchronously queued nothing either — a custom TopicLike can do
+  // this — so its key needs the same hold, even though the attempt did reach the SDK.
+  test("holds back the key when publishMessage itself throws synchronously", async () => {
+    const sent: Array<string | undefined> = [];
+    let calls = 0;
+    const client = {
+      topic: () => ({
+        // Deliberately not async: the throw must escape synchronously, as a custom client's can.
+        publishMessage: (m: { orderingKey?: string }) => {
+          calls++;
+          if (calls === 1) throw new Error("rejected before queueing");
+          sent.push(m.orderingKey);
+          return Promise.resolve(`msg-${calls}`);
+        },
+        resumePublishing: () => {},
+      }),
+      subscription: vi.fn(),
+      close: vi.fn(async () => {}),
+    } as unknown as PubSubClientLike;
+    const { publisher } = publisherWith({ client, ordering: true });
+
+    const error = await publisher
+      .publishBatch([
+        { type: TYPE, data: {}, subject: "SCL" },
+        { type: TYPE, data: {}, subject: "SCL" },
+        { type: TYPE, data: {}, subject: "GRU" },
+      ])
+      .catch((e: unknown) => e);
+
+    expect((error as PartialPublishError).failures.map((f) => f.index)).toEqual([0, 1]);
+    expect(sent).toEqual(["GRU"]);
+  });
+
+  // The sentinel is the caller's machine-checkable carve-out: `failures` mixes real failures with
+  // held-back requests, and only the first kind has anything to fix.
+  test("reports a held-back request as an OrderingKeyBlockedError naming the blocking failure", async () => {
+    const { publisher } = publisherWith({ ordering: true, encode: poisonEncode });
+
+    const error = await publisher
+      .publishBatch([
+        { type: TYPE, data: { poison: true }, subject: "SCL" },
+        { type: TYPE, data: {}, subject: "SCL" },
+      ])
+      .catch((e: unknown) => e);
+
+    const cause = (error as PartialPublishError).failures[1].cause;
+    expect(cause).toBeInstanceOf(OrderingKeyBlockedError);
+    const blocked = cause as OrderingKeyBlockedError;
+    expect(blocked.name).toBe("OrderingKeyBlockedError");
+    expect(blocked.orderingKey).toBe("SCL");
+    expect(blocked.blockedBy).toEqual({ index: 0, type: TYPE });
+    expect(blocked.message).toMatch(/held back/);
+  });
+
+  // Nothing on the held key ever reached the SDK, so there is no suspension to lift — and resuming
+  // an untouched key is a hazard, not a no-op (see "does not resume a key whose publish never
+  // reached the SDK").
+  test("does not resume a key it only held back", async () => {
+    const { publisher, resumed } = publisherWith({ ordering: true, encode: poisonEncode });
+
+    await publisher
+      .publishBatch([
+        { type: TYPE, data: { poison: true }, subject: "SCL" },
+        { type: TYPE, data: {}, subject: "SCL" },
+      ])
+      .catch(() => {});
+
+    expect(resumed).toEqual([]);
+  });
+
+  // The hold-back protects call order within one batch, which is the only order the publisher can
+  // see. Across batches the caller owns the sequencing — an outbox relay that retries failed rows
+  // before their successors satisfies it; a key held forever would just go deaf.
+  test("scopes the hold to the batch: the same key publishes normally on the next call", async () => {
+    let first = true;
+    const encode = (_type: string, data: unknown) => {
+      if (first) {
+        first = false;
+        throw new Error("schema mismatch");
+      }
+      return Buffer.from(JSON.stringify(data));
+    };
+    const { publisher, published } = publisherWith({ ordering: true, encode });
+
+    await publisher
+      .publishBatch([
+        { type: TYPE, data: {}, subject: "SCL" },
+        { type: TYPE, data: {}, subject: "SCL" },
+      ])
+      .catch(() => {});
+    await expect(publisher.publishBatch([{ type: TYPE, data: {}, subject: "SCL" }])).resolves.toHaveLength(1);
+
+    expect(published.map((p) => p.orderingKey)).toEqual(["SCL"]);
   });
 });
 
