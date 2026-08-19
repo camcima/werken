@@ -9,5 +9,8 @@ coverage:
   status:
     project:
       default:
-        target: 80%
+        # A floor just under where the project actually sits (98.69% at the time of writing), not an
+        # aspiration: the point is to catch a real regression, and a target far below the true figure
+        # cannot — coverage could fall by fifteen points and still report green.
+        target: 95%
     patch: false
