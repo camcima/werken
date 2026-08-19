@@ -440,3 +440,133 @@ describe("stream errors", () => {
     expect(errors.join("\n")).toMatch(/stream broke/);
   });
 });
+
+/**
+ * The 'message' listener starts handling fire-and-forget (`void this.handleMessage(...)`), so
+ * anything that escapes that promise is an unhandled rejection — which by default takes the worker
+ * down and loses every other message in flight with it.
+ *
+ * The pipeline guards its own stages, but telemetry and the logger are both caller-supplied and
+ * both run outside those guards: a metrics exporter or a custom Nest logger that throws is all it
+ * takes. A throwing logger stands in for that class of failure here because it is the one the test
+ * can inject without registering a global OpenTelemetry provider.
+ */
+describe("a pipeline that throws outside its own guards", () => {
+  function exploding() {
+    const { client, subscription } = fakeClient();
+    const transport = new WerkenPubSubTransport({
+      projectId: "p",
+      subscription: "s",
+      // Reaches the pipeline's own logging path: no handler is registered, so this message is
+      // unhandled, and 'nack' is the policy that logs on the way out.
+      onUnhandledPattern: "nack",
+      createClient: () => client as never,
+    });
+    return { transport, subscription };
+  }
+
+  test("nacks the message instead of abandoning it", async () => {
+    const { transport, subscription } = exploding();
+    await listenReady(transport);
+    vi.spyOn(transport["logger"], "warn").mockImplementation(() => {
+      throw new Error("logger exploded");
+    });
+    vi.spyOn(transport["logger"], "error").mockImplementation(() => {});
+
+    const message = incoming();
+    subscription.emit("message", message);
+    await settle();
+
+    expect(message.nack).toHaveBeenCalled();
+    expect(message.ack).not.toHaveBeenCalled();
+  });
+
+  test("does not let the failure escape as an unhandled rejection", async () => {
+    const { transport, subscription } = exploding();
+    await listenReady(transport);
+    vi.spyOn(transport["logger"], "warn").mockImplementation(() => {
+      throw new Error("logger exploded");
+    });
+    vi.spyOn(transport["logger"], "error").mockImplementation(() => {});
+
+    const escaped: unknown[] = [];
+    const onUnhandled = (reason: unknown) => escaped.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      subscription.emit("message", incoming());
+      await settle();
+      // An unhandled rejection is reported a tick after the promise is discarded, so the check has
+      // to outlast the microtask queue that settle() drains.
+      await new Promise((r) => setTimeout(r, 10));
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+
+    expect(escaped).toEqual([]);
+  });
+
+  // The logger is one of the things that can have thrown, so the recovery must not assume it works.
+  test("survives a logger that throws on the way out too", async () => {
+    const { transport, subscription } = exploding();
+    await listenReady(transport);
+    const explode = () => {
+      throw new Error("logger exploded");
+    };
+    vi.spyOn(transport["logger"], "warn").mockImplementation(explode);
+    vi.spyOn(transport["logger"], "error").mockImplementation(explode);
+
+    const message = incoming();
+    subscription.emit("message", message);
+    await settle();
+
+    expect(message.nack).toHaveBeenCalled();
+  });
+});
+
+describe("closing down cleanly", () => {
+  // The client owns gRPC channels, retry timers and a credentials refresh loop. Leaving it open
+  // because the subscription objected on the way out is how a crash-looping worker — or a test
+  // suite — accumulates them until it runs out of handles.
+  test("closes the client even when closing the subscription throws", async () => {
+    const { subscription, client } = fakeClient();
+    subscription.close = vi.fn(async () => {
+      throw new Error("stream already gone");
+    });
+    const transport = new WerkenPubSubTransport({
+      projectId: "p",
+      subscription: "s",
+      createClient: () => client as never,
+    });
+    vi.spyOn(transport["logger"], "error").mockImplementation(() => {});
+
+    await listenReady(transport);
+    await transport.close();
+
+    expect(client.close).toHaveBeenCalled();
+  });
+
+  // Returning early while the first drain is still running tells the second caller that shutdown
+  // finished when in-flight handlers are still going. Nest awaits close() precisely to know when it
+  // is safe to exit.
+  test("a concurrent close waits for the drain already in progress", async () => {
+    const { subscription, client } = fakeClient();
+    const transport = new WerkenPubSubTransport({
+      projectId: "p",
+      subscription: "s",
+      shutdownDrainTimeoutMs: 50,
+      createClient: () => client as never,
+    });
+
+    transport.addHandler(TYPE, (() => new Promise(() => {})) as never, true);
+    await listenReady(transport);
+    subscription.emit("message", incoming());
+    await settle();
+
+    const first = transport.close();
+    const second = transport.close();
+    await second;
+
+    expect(client.close).toHaveBeenCalled();
+    await first;
+  });
+});
