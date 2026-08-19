@@ -49,6 +49,13 @@
       }
     }
   },
+  "typesVersions": {
+    "*": {
+      "testing": [
+        "./dist/testing/index.d.ts"
+      ]
+    }
+  },
   "sideEffects": false,
   "files": [
     "dist",
