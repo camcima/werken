@@ -8,6 +8,7 @@ import type { IdempotencyKey, IdempotencyStore } from "./idempotency.js";
 import { schemaMetaFromAttributes } from "./schema/attributes.js";
 import type { Telemetry } from "./telemetry.js";
 import { withEventFields } from "./logging.js";
+import { WriterSchemaUnavailableError } from "./schema/avro-codec.js";
 import type { AvroCodec } from "./schema/avro-codec.js";
 import type { CloudEventContext, IncomingMessage } from "./types.js";
 
@@ -40,8 +41,25 @@ const INVALID_ROUTE = "<invalid>";
 export interface ValidationOptions {
   /** Default 'dead-letter'. */
   onInvalidEnvelope?: RejectionPolicy;
-  /** Default 'dead-letter'. */
+  /**
+   * A body this consumer cannot read: not valid JSON, not decodable against its schema, or a
+   * reader type it does not have. Default 'dead-letter' — the bytes will not become readable on
+   * redelivery, so retrying only burns the budget.
+   */
   onDecodeFailure?: RejectionPolicy;
+  /**
+   * The writer schema could not be *fetched* — a Schema Service outage, a revision that has not
+   * propagated, a client without schema support. Default 'nack'.
+   *
+   * Deliberately separate from `onDecodeFailure`, and deliberately not defaulted to it: nothing is
+   * known to be wrong with the message, so the next delivery will very likely decode it. Dead-
+   * lettering here turns a blip into a manual redrive of every in-flight message, which
+   * is the same reasoning that makes an unreadable idempotency store nack rather than reprocess.
+   *
+   * Only reachable with `schemaRegistry.strict` left on: with it off the codec has already fallen
+   * back to plain JSON for exactly this failure and decode never fails.
+   */
+  onSchemaUnavailable?: RejectionPolicy;
   /** Default false. */
   requireDataschema?: boolean;
 }
@@ -213,8 +231,14 @@ export class MessagePipeline {
         : telemetry.withChildSpan("werken.decode", () => this.decode(message)));
     } catch (error) {
       telemetry?.recordDecodeFailure(label, decodeReason(error));
+      // Two different failures wear the same stage. An unfetchable writer schema says nothing about
+      // the bytes, so it gets its own policy and defaults to redelivery; everything else here is a
+      // body this consumer will never read, whatever it does next.
+      const unavailable = error instanceof WriterSchemaUnavailableError;
       return this.reject(message, {
-        policy: this.options.validation?.onDecodeFailure ?? "dead-letter",
+        policy: unavailable
+          ? (this.options.validation?.onSchemaUnavailable ?? "nack")
+          : (this.options.validation?.onDecodeFailure ?? "dead-letter"),
         stage: "decode",
         reason: asMessage(error),
         now,

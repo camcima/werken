@@ -123,13 +123,16 @@ describe("schema cache metric", () => {
 });
 
 describe("schema fetch failures", () => {
+  // Logged at WARN rather than ERROR: an unfetchable writer schema takes the
+  // `validation.onSchemaUnavailable` path, which defaults to nack, and a policy doing what it was
+  // configured to do is not a library failure. The cause is still named either way.
   test("nacks and names the cause when the client cannot fetch schemas", async () => {
     // A client built without schema support still receives schema-encoded messages; decoding them
     // against the reader alone would silently mis-read anything the writer changed.
     const { subscription, client } = fakeClient();
     const transport = transportWith(client);
     const errors: string[] = [];
-    vi.spyOn(transport["logger"], "error").mockImplementation((m: unknown) => void errors.push(String(m)));
+    vi.spyOn(transport["logger"], "warn").mockImplementation((m: unknown) => void errors.push(String(m)));
 
     transport.addHandler(TYPE, (() => {}) as never, true);
     await listenReady(transport);
@@ -148,7 +151,7 @@ describe("schema fetch failures", () => {
     const { subscription, client } = fakeClient(vi.fn(() => ({ get: async () => ({ definition: null }) })));
     const transport = transportWith(client);
     const errors: string[] = [];
-    vi.spyOn(transport["logger"], "error").mockImplementation((m: unknown) => void errors.push(String(m)));
+    vi.spyOn(transport["logger"], "warn").mockImplementation((m: unknown) => void errors.push(String(m)));
 
     transport.addHandler(TYPE, (() => {}) as never, true);
     await listenReady(transport);
