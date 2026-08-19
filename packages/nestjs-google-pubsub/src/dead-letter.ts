@@ -83,6 +83,11 @@ export const DEAD_LETTER_ATTRIBUTES = {
   detail: "werken-dl-detail",
   /** The original ordering key, so redrive tooling can restore per-entity order. */
   orderingKey: "werken-dl-ordering-key",
+  /**
+   * How many of the original's own attributes had to be dropped to fit Pub/Sub's 100-attribute
+   * limit. Absent when none were — which is every ordinary message.
+   */
+  droppedAttributes: "werken-dl-dropped-attributes",
 } as const;
 
 /** Publishes terminal messages to an explicitly configured Pub/Sub topic. */
@@ -103,9 +108,11 @@ export class PubSubDeadLetterPublisher implements DeadLetterPublisher {
 /** Builds the attribute set for a dead-lettered message: the original plus provenance. */
 function deadLetterAttributes(request: DeadLetterRequest): Record<string, string> {
   const orderingKey = request.message.orderingKey;
-  return {
-    ...request.message.attributes,
-    [DEAD_LETTER_ATTRIBUTES.reason]: request.reason,
+  const provenance: Record<string, string> = {
+    // Truncated because it is the one provenance value with no bound of its own: an envelope error
+    // interpolates the offending attribute (itself up to the full 1024 bytes) and a
+    // TerminalEventError reason is whatever the application passed.
+    [DEAD_LETTER_ATTRIBUTES.reason]: truncateAttribute(request.reason),
     [DEAD_LETTER_ATTRIBUTES.sourceSubscription]: request.subscription,
     [DEAD_LETTER_ATTRIBUTES.timestamp]: request.timestamp.toISOString(),
     [DEAD_LETTER_ATTRIBUTES.stage]: request.stage,
@@ -115,6 +122,69 @@ function deadLetterAttributes(request: DeadLetterRequest): Record<string, string
     // made slower exactly when things are already going wrong.
     ...(orderingKey === undefined || orderingKey === "" ? {} : { [DEAD_LETTER_ATTRIBUTES.orderingKey]: orderingKey }),
   };
+
+  return withinAttributeLimit(request.message.attributes, provenance);
+}
+
+/**
+ * Pub/Sub accepts at most 100 attributes per message, and the original's are forwarded verbatim —
+ * so a message already at the limit would push this publish past it once provenance is added. The
+ * publish failing is the one outcome that must not happen here: the pipeline answers it with a
+ * nack, which redelivers the poison message into the same failure indefinitely.
+ *
+ * Provenance is kept whole, because it is the reason the message is on this topic at all. The
+ * envelope goes next, because redrive republishes from it. A producer's own annotations are what
+ * gives, and the count that went is reported rather than left to be inferred from a gap.
+ */
+const MAX_ATTRIBUTES = 100;
+const CE_PREFIX = "ce-";
+
+function withinAttributeLimit(
+  original: Readonly<Record<string, string>>,
+  provenance: Record<string, string>,
+): Record<string, string> {
+  // Keys provenance overwrites cost nothing extra, so they are not counted twice — which is the
+  // case when a message that was already dead-lettered once passes through again.
+  const carried = Object.keys(original).filter((key) => !(key in provenance));
+  if (Object.keys(provenance).length + carried.length <= MAX_ATTRIBUTES) {
+    return { ...original, ...provenance };
+  }
+
+  const ordered = [
+    ...carried.filter((key) => key.startsWith(CE_PREFIX)),
+    ...carried.filter((key) => !key.startsWith(CE_PREFIX)),
+  ];
+  // One slot reserved for the marker below, which only exists on this path.
+  const budget = Math.max(MAX_ATTRIBUTES - Object.keys(provenance).length - 1, 0);
+  const kept = ordered.slice(0, budget);
+
+  const attributes: Record<string, string> = {};
+  for (const key of kept) attributes[key] = original[key];
+  return {
+    ...attributes,
+    ...provenance,
+    [DEAD_LETTER_ATTRIBUTES.droppedAttributes]: String(ordered.length - kept.length),
+  };
+}
+
+/** Marks a value as cut rather than letting it read as though the text simply ended there. */
+const TRUNCATION_MARKER = "…[truncated]";
+
+function truncateAttribute(value: string): string {
+  if (Buffer.byteLength(value, "utf8") <= MAX_ATTRIBUTE_BYTES) return value;
+
+  const budget = MAX_ATTRIBUTE_BYTES - Buffer.byteLength(TRUNCATION_MARKER, "utf8");
+  let bytes = 0;
+  let head = "";
+  // Accumulated per code point rather than sliced per byte: slicing bytes can cut a multi-byte
+  // sequence into a U+FFFD replacement character, or a surrogate pair into a lone surrogate.
+  for (const character of value) {
+    const size = Buffer.byteLength(character, "utf8");
+    if (bytes + size > budget) break;
+    bytes += size;
+    head += character;
+  }
+  return `${head}${TRUNCATION_MARKER}`;
 }
 
 /**
