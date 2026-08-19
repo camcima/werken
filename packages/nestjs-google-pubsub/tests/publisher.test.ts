@@ -868,3 +868,49 @@ describe("payload encoding", () => {
     await expect(publisher.publish({ type: TYPE, data: {} })).rejects.toThrow(/datacontenttype/);
   });
 });
+
+/**
+ * `id` is already refused when supplied empty, on the grounds that a silent fallback leaves the
+ * caller worse off than never having tried. `type` and `source` carry the same weight and had no
+ * such guard: an empty one produces an envelope every CloudEvents consumer rejects, discovered at
+ * the far end of the pipe as dead-letters rather than here, where the mistake is.
+ */
+describe("required envelope fields", () => {
+  // Matched on the field's own message, not just /type/: an empty type also fails topic resolution,
+  // so a loose matcher would pass on the wrong error and prove nothing about this guard.
+  test.each([
+    ["an empty type", { type: "", data: {} }],
+    ["a whitespace-only type", { type: "   ", data: {} }],
+  ])("refuses %s", async (_name, request) => {
+    const { publisher, published } = publisherWith();
+
+    await expect(publisher.publish(request)).rejects.toThrow(/PublishRequest\.type is empty/);
+    expect(published).toEqual([]);
+  });
+
+  test.each([
+    ["an empty source override", ""],
+    ["a whitespace-only source override", "   "],
+  ])("refuses %s", async (_name, source) => {
+    const { publisher, published } = publisherWith();
+
+    await expect(publisher.publish({ type: TYPE, data: {}, source })).rejects.toThrow(/source/);
+    expect(published).toEqual([]);
+  });
+
+  test("refuses a publisher configured with an empty source", async () => {
+    const { publisher } = publisherWith({ source: "" });
+
+    await expect(publisher.publish({ type: TYPE, data: {} })).rejects.toThrow(/source/);
+  });
+
+  // The guard must not start rejecting the ordinary case.
+  test("still publishes when both are present", async () => {
+    const { publisher, published } = publisherWith();
+
+    await publisher.publish({ type: TYPE, data: { hello: "world" } });
+
+    expect(published[0].attributes["ce-type"]).toBe(TYPE);
+    expect(published[0].attributes["ce-source"]).toBe(SOURCE);
+  });
+});
