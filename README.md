@@ -209,10 +209,18 @@ receive
   → open telemetry span   parented on ce-traceparent
   → idempotency check     already processed → ack, count as skipped duplicate
   → decode payload        failure → validation.onDecodeFailure (default dead-letter)
+                          writer schema unfetchable → validation.onSchemaUnavailable (default nack)
   → invoke handler        lease extension running
   → record idempotency
   → outcome               ack | nack | dead-letter
 ```
+
+Decode has two policies rather than one because it can fail for two unrelated reasons. A body this
+consumer cannot read — not valid JSON, not decodable against its schema, no reader type for it — is
+terminal, and dead-lettering it is right: redelivery will not make those bytes readable. A writer
+schema that could not be _fetched_ says nothing about the message; the next delivery will very
+likely decode it, so it nacks rather than turning a Schema Service blip into a manual redrive of
+everything in flight during it. Catch `WriterSchemaUnavailableError` to tell them apart yourself.
 
 Two orderings in there are deliberate and worth knowing:
 
@@ -236,13 +244,20 @@ The original body and attributes, untouched, plus provenance:
 | `werken-dl-timestamp`           | When it was dead-lettered, ISO 8601                         |
 | `werken-dl-detail`              | JSON of the `detail` a `TerminalEventError` carried, if any |
 | `werken-dl-ordering-key`        | The original ordering key, if it had one                    |
+| `werken-dl-dropped-attributes`  | Count of the original's attributes dropped to fit, if any   |
 
 `throw new TerminalEventError("unknown shipment", { shipmentId })` puts `{"shipmentId":"..."}` in
 `werken-dl-detail`, so the context you attached is there when you come to triage it.
 
-Two limits worth knowing. Pub/Sub caps an attribute at 1024 bytes, so detail larger than that is
-replaced by `{"truncated":true,"bytes":N}` — truncating JSON mid-string would leave something
-nothing can parse. Detail that cannot be serialised at all becomes `{"unserialisable":true,...}`.
+Pub/Sub's per-message limits are enforced here rather than discovered at the broker, because a
+dead-letter publish that fails comes back as a nack and redelivers the poison message into the same
+failure. An attribute is capped at 1024 bytes, so detail larger than that is replaced by
+`{"truncated":true,"bytes":N}` — truncating JSON mid-string would leave something nothing can
+parse — and detail that cannot be serialised at all becomes `{"unserialisable":true,...}`. An
+oversized `werken-dl-reason` is cut on a character boundary and marked `…[truncated]`. A message is
+capped at 100 attributes, so if the original was already at the limit its own attributes are
+dropped — provenance first, then the `ce-*` envelope that redrive republishes from — and
+`werken-dl-dropped-attributes` reports how many went.
 Neither ever fails the publish: losing the message is worse than losing its diagnostics.
 
 The ordering key is carried as **provenance, not as a live ordering key**. Republishing under a real
@@ -580,12 +595,15 @@ _delivery_, not about _processing_. Werken narrows the duplicate window; your ha
 **Exactly one handler runs per message.** Exact beats wildcard; among wildcards the longest literal
 prefix wins; the catch-all is last. Precedence does not depend on registration order.
 
-Two failures are deliberately made loud at startup rather than left to production:
+Three failures are deliberately made loud at startup rather than left to production:
 
 - **Two handlers for one pattern.** Nest chains duplicate event handlers, so the second would
   register successfully and then never run. Werken refuses to start instead.
 - **A wildcard anywhere but the final segment.** `com.*.thing` is rejected, because a pattern that
   silently never matches is much harder to notice than a boot error.
+- **A `@MessagePattern` handler.** Nest registers request/response and event handlers into the same
+  map. This transport carries events and has no reply path, so such a handler would run and have its
+  return value discarded. Use `@EventPattern`.
 
 ---
 
@@ -617,6 +635,11 @@ Behaviour that matters:
   for availability. It does **not** loosen anything else: a missing reader type, a definition that is
   not valid Avro, and a writer the reader cannot resolve stay fatal whatever `strict` says, because
   there the schema is known and the message still cannot be read correctly.
+- **An unfetchable writer schema nacks, it does not dead-letter.** With `strict` left on, that
+  failure reaches the pipeline as `WriterSchemaUnavailableError` and takes
+  `validation.onSchemaUnavailable` (default `nack`) rather than `onDecodeFailure`. Nothing is known
+  to be wrong with the message, so redelivering costs a retry while dead-lettering costs a manual
+  redrive of everything in flight during the outage.
 - **Schema metadata is all-or-nothing.** Pub/Sub sets the schema name, revision and encoding
   together or sets none of them, so a partial set is rejected rather than treated as an
   unschematised topic, and an encoding that is neither `JSON` nor `BINARY` is rejected rather than
@@ -1066,7 +1089,8 @@ semver. The test harness is at `@werken/nestjs-google-pubsub/testing`.
 | `EventHandler`, `Outcome`, `RejectionPolicy`                       | `EncodedPayload`                   | `DeadLetterRequest`, `DeadLetterStage` | `SqlExecutor`, `SqlIdempotencyStoreOptions`                              |
 | `ValidationOptions`, `FlowControlOptions`, `SchemaRegistryOptions` | `PartialPublishError`              | `DEAD_LETTER_ATTRIBUTES`               | `idempotencyKeyToString`, `pruneExpiredSql`, `DEFAULT_IDEMPOTENCY_TABLE` |
 
-Plus the errors worth catching by type — `SchemaDecodeError`, `ResourcePrefixError`,
+Plus the errors worth catching by type — `SchemaDecodeError`, `WriterSchemaUnavailableError`,
+`ResourcePrefixError`,
 `InvalidPatternError`, `AmbiguousPatternError` — and the structural SDK types you need only if you
 supply your own `createClient` or dead-letter publisher: `PubSubClientLike`, `SubscriptionLike`,
 `TopicLike`, `SchemaLike`.
