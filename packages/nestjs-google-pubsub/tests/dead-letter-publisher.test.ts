@@ -326,3 +326,51 @@ describe("Pub/Sub attribute limits", () => {
     expect(Number(sent.attributes[DEAD_LETTER_ATTRIBUTES.droppedAttributes])).toBeGreaterThan(0);
   });
 });
+
+/**
+ * `createEventPublisher` already documents why this matters and keeps one Topic per destination:
+ * each `client.topic()` call returns a Topic with its own publisher and batch queue, so building
+ * one per message means the SDK's batching never engages and every publish pays full per-message
+ * overhead. Dead-letter volume is normally low — but the moment it is not is a poison-message
+ * storm, which is exactly when the path should not be at its slowest.
+ */
+describe("Topic reuse", () => {
+  test("builds the Topic once however many messages are dead-lettered", async () => {
+    const { topic } = fakeTopic();
+    const topicFor = vi.fn(() => topic);
+    const publisher = new PubSubDeadLetterPublisher({ topic: topicFor } as never, "dead-letters");
+
+    for (let i = 0; i < 5; i++) {
+      await publisher.publish({
+        message: incoming(),
+        reason: "unknown shipment",
+        stage: "handler",
+        subscription: "orders-consumer",
+        timestamp: new Date("2026-08-03T10:00:00.000Z"),
+      });
+    }
+
+    expect(topicFor).toHaveBeenCalledTimes(1);
+  });
+
+  test("still publishes every message", async () => {
+    const { topic, published } = fakeTopic();
+    const publisher = new PubSubDeadLetterPublisher({ topic: vi.fn(() => topic) } as never, "dead-letters");
+
+    for (const id of ["a", "b", "c"]) {
+      await publisher.publish({
+        message: incoming({ id }),
+        reason: `unknown ${id}`,
+        stage: "handler",
+        subscription: "orders-consumer",
+        timestamp: new Date("2026-08-03T10:00:00.000Z"),
+      });
+    }
+
+    expect(published.map((p) => p.attributes[DEAD_LETTER_ATTRIBUTES.reason])).toEqual([
+      "unknown a",
+      "unknown b",
+      "unknown c",
+    ]);
+  });
+});

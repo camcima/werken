@@ -1,6 +1,6 @@
 import { uuidv7 } from "uuidv7";
 import { toPubSubAttributes } from "@werken/cloudevents";
-import { optionalRequire } from "./optional-require.cjs";
+import { loadOtelApi } from "./otel.js";
 import type { PubSubClientLike, TopicLike } from "./options.js";
 import { applyResourcePrefix, assertResourcePrefixSafe } from "./resource-name.js";
 
@@ -442,7 +442,7 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
  * producer's trace. Absent OTel, or outside a span, this contributes nothing.
  */
 function currentTraceparent(): string | undefined {
-  const api = optionalRequire("@opentelemetry/api") as typeof import("@opentelemetry/api") | undefined;
+  const api = loadOtelApi();
   if (api === undefined) return undefined;
   try {
     const carrier: Record<string, string> = {};

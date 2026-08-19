@@ -1,5 +1,5 @@
 import type { Meter, MeterProvider, Span, Tracer } from "@opentelemetry/api";
-import { optionalRequire } from "./optional-require.cjs";
+import { loadOtelApi } from "./otel.js";
 import type { Outcome } from "./pipeline.js";
 
 /** The envelope fields telemetry needs, so this module does not depend on the full type. */
@@ -165,7 +165,7 @@ let cached: LoadedOtel | null | undefined;
 
 function loadOtel(): LoadedOtel | undefined {
   if (cached !== undefined) return cached ?? undefined;
-  const api = optionalRequire("@opentelemetry/api") as typeof import("@opentelemetry/api") | undefined;
+  const api = loadOtelApi();
   cached = api === undefined ? null : { api, SpanKind: api.SpanKind, SpanStatusCode: api.SpanStatusCode };
   return cached ?? undefined;
 }

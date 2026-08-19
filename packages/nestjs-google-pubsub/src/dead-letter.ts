@@ -1,5 +1,5 @@
 import { RpcException } from "@nestjs/microservices";
-import type { PubSubClientLike } from "./options.js";
+import type { PubSubClientLike, TopicLike } from "./options.js";
 import type { IncomingMessage } from "./types.js";
 
 /**
@@ -92,13 +92,26 @@ export const DEAD_LETTER_ATTRIBUTES = {
 
 /** Publishes terminal messages to an explicitly configured Pub/Sub topic. */
 export class PubSubDeadLetterPublisher implements DeadLetterPublisher {
+  /**
+   * Resolved once, for the same reason `createEventPublisher` keeps one Topic per destination:
+   * every `client.topic()` call returns a Topic with its own publisher and batch queue, so one per
+   * message means the SDK's batching never engages and each publish pays full overhead. Dead-letter
+   * volume is normally low, and the moment it is not is a poison-message storm — which is when this
+   * path should not also be at its slowest.
+   *
+   * Lazy rather than built in the constructor: the transport constructs this during startup, and
+   * resolving a topic is the client's work to do when it is actually needed.
+   */
+  private resolved?: TopicLike;
+
   constructor(
     private readonly client: PubSubClientLike,
     private readonly topic: string,
   ) {}
 
   async publish(request: DeadLetterRequest): Promise<void> {
-    await this.client.topic(this.topic).publishMessage({
+    this.resolved ??= this.client.topic(this.topic);
+    await this.resolved.publishMessage({
       data: request.message.data,
       attributes: deadLetterAttributes(request),
     });
