@@ -278,17 +278,18 @@ export class MessagePipeline {
     }
   }
 
-  /**
-   * Recorded only after the handler succeeded and before the ack. Recording earlier risks silently
-   * dropping a message that then failed; recording after the ack risks a crash in between. Neither
-   * is eliminable — this is at-least-once — which is why handlers must still be idempotent.
-   */
+  /** Avro when a codec is configured and the topic carries a schema, plain JSON otherwise. */
   private async decode(message: IncomingMessage): Promise<unknown> {
     return this.options.codec === undefined
       ? plainJson(message)
       : await this.options.codec.decode(message.data, schemaMetaFromAttributes(message.attributes));
   }
 
+  /**
+   * Recorded only after the handler succeeded and before the ack. Recording earlier risks silently
+   * dropping a message that then failed; recording after the ack risks a crash in between. Neither
+   * is eliminable — this is at-least-once — which is why handlers must still be idempotent.
+   */
   private async record(key: IdempotencyKey, ctx: CloudEventContext): Promise<void> {
     const store = this.options.idempotencyStore;
     if (store === undefined) return;

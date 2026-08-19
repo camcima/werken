@@ -59,9 +59,10 @@ export function idempotencyKeyToString(key: IdempotencyKey): string {
  *
  * `rowCount` must be **the number of rows the statement returned**.
  *
- * Both statements this store issues end in `RETURNING`, so "rows returned" is all an adapter ever
- * has to report — no distinguishing reads from writes, which is where drivers disagree most. Most
- * can simply return `rows.length`.
+ * Both statements this store issues return rows — a `SELECT` and an `INSERT ... RETURNING` — so
+ * "rows returned" is all an adapter ever has to report, and never the write count. That is
+ * deliberate: distinguishing rows-read from rows-affected is where drivers disagree most. Most can
+ * simply return `rows.length`.
  *
  * Get this wrong and the failure is silent, not loud, in both directions:
  *  - always-0 makes `has` report every message as new, disabling de-duplication entirely, and makes
