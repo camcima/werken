@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.5.0](https://github.com/camcima/werken/compare/v0.4.1...v0.5.0) (2026-08-19)
+
+A minor rather than a patch, although every commit below is a `fix:`. Three of them change
+behaviour a running consumer can notice, and two add public API — so the number is the signal to
+read this section before upgrading.
+
+**Check before you upgrade**
+
+- **A `@MessagePattern` handler now fails at startup.** Nest registers request/response and event
+  handlers into the same map, and this transport has no reply path, so such a handler used to run
+  with its return value silently discarded. It is now refused when the transport starts. If a
+  consumer boots with one, it will not start until the decorator becomes `@EventPattern`.
+- **An unfetchable writer schema now nacks instead of dead-lettering.** A Schema Service outage no
+  longer converts every in-flight message into a manual redrive. If you were relying on the old
+  outcome, set `validation.onSchemaUnavailable: "dead-letter"`. Only reachable with
+  `schemaRegistry.strict` left on.
+- **Publishing with an empty `type` or `source` now throws.** Previously it produced an envelope
+  that every CloudEvents consumer rejects, so the failure surfaced downstream as dead-letters
+  rather than at the publish that caused it.
+
+**New**
+
+- `validation.onSchemaUnavailable` (default `nack`), and `WriterSchemaUnavailableError` is now
+  exported so the case can be told apart from a body that is genuinely unreadable.
+- `werken-dl-dropped-attributes` on a dead-lettered message, when the original's own attributes had
+  to be dropped to fit Pub/Sub's 100-attribute limit.
+- `emitRaw` in the test harness takes the same delivery options as `emit`.
+
+### Bug Fixes
+
+* **cloudevents:** reject hour 24 in an RFC 3339 timestamp ([cf713c6](https://github.com/camcima/werken/commit/cf713c657be3c1a51ba8691912709b677763eba5))
+* **deps:** raise the nanoid override to 3.3.18 for GHSA-2v37-7h3g-55p8 ([50fa7dd](https://github.com/camcima/werken/commit/50fa7dd9018a8fdf25d53df970f9d5eb671cf8ee))
+* **pubsub:** bound dead-letter provenance to Pub/Sub's attribute limits ([f204f8e](https://github.com/camcima/werken/commit/f204f8e00c8056088dd7fdfd8ea805e3f47a70a4))
+* **pubsub:** harden the transport's message and shutdown paths ([68d71df](https://github.com/camcima/werken/commit/68d71df78b0855eaa11db05949c1237e3952f68d))
+* **pubsub:** nack rather than dead-letter an unfetchable writer schema ([c5d4087](https://github.com/camcima/werken/commit/c5d40872d5cd0c0ae43be08a18af759ccd2aea27))
+* **pubsub:** refuse a @MessagePattern handler at startup ([fd187f9](https://github.com/camcima/werken/commit/fd187f92facd44c96387b766515af1cc2eafe31a))
+* **pubsub:** validate the envelope fields a publish cannot default ([38425a1](https://github.com/camcima/werken/commit/38425a110de63468da7e15a48008e7379caed5b1))
+* **testing:** let emitRaw take the same delivery options as emit ([0090215](https://github.com/camcima/werken/commit/0090215bc084bffd2acf3b39accd80f062b1194c))
+* **testing:** resolve the ./testing subpath under node10 type resolution ([4b32c0c](https://github.com/camcima/werken/commit/4b32c0c0b6e6d4ddee5f6301301bca5207b0ba27)), references [#8](https://github.com/camcima/werken/issues/8)
+
+### Performance Improvements
+
+* **pubsub:** resolve the OpenTelemetry API and dead-letter topic once ([a34c1a2](https://github.com/camcima/werken/commit/a34c1a2c5a135ea5a0e83f96db912a82968c2950))
+
 ## [0.4.1](https://github.com/camcima/werken/compare/v0.4.0...v0.4.1) (2026-08-09)
 
 ### Bug Fixes

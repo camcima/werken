@@ -1,6 +1,6 @@
 {
   "name": "@werken/nestjs-google-pubsub",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "NestJS custom transport for Google Cloud Pub/Sub speaking CloudEvents 1.0. Write an event consumer as an ordinary Nest controller.",
   "keywords": [
     "nestjs",

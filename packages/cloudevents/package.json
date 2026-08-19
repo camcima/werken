@@ -1,6 +1,6 @@
 {
   "name": "@werken/cloudevents",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "CloudEvents 1.0 envelope types, validation, and Pub/Sub attribute binding. Zero runtime dependencies.",
   "keywords": [
     "cloudevents",
