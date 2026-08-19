@@ -1,5 +1,12 @@
 import { EventEmitter } from "node:events";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { metrics } from "@opentelemetry/api";
+import {
+  AggregationTemporality,
+  InMemoryMetricExporter,
+  MeterProvider,
+  PeriodicExportingMetricReader,
+} from "@opentelemetry/sdk-metrics";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { WerkenPubSubTransport } from "@werken/nestjs-google-pubsub";
 
 class FakeSubscription extends EventEmitter {
@@ -336,5 +343,69 @@ describe("numeric option validation", () => {
     });
 
     expect(await listen(transport)).toBeUndefined();
+  });
+});
+
+/**
+ * Everything that names the subscription must name the one that actually delivered the message.
+ * `CloudEventContext.subscription`, dead-letter provenance and the received/outcome metrics all
+ * already report the resolved name; an in-flight series labelled with the raw one is a gauge that
+ * joins to nothing.
+ *
+ * Asserted through a global MeterProvider rather than a telemetry double, because the thing under
+ * test is which string the transport passes — a fake would take that string on trust.
+ */
+describe("telemetry labelling under a prefix", () => {
+  let exporter: InMemoryMetricExporter;
+  let reader: PeriodicExportingMetricReader;
+  let meterProvider: MeterProvider;
+
+  beforeEach(() => {
+    exporter = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
+    reader = new PeriodicExportingMetricReader({ exporter, exportIntervalMillis: 60_000 });
+    meterProvider = new MeterProvider({ readers: [reader] });
+    metrics.setGlobalMeterProvider(meterProvider);
+  });
+
+  afterEach(async () => {
+    metrics.disable();
+    await meterProvider.shutdown();
+  });
+
+  test("labels in-flight with the resolved subscription name", async () => {
+    const { client, subscription } = fakeClient();
+    const transport = new WerkenPubSubTransport({
+      projectId: "p",
+      subscription: "orders-consumer",
+      resourcePrefix: "alice",
+      createClient: () => client as never,
+    });
+    vi.spyOn(transport["logger"], "warn").mockImplementation(() => {});
+
+    await listen(transport);
+    subscription.emit("message", {
+      id: "m1",
+      attributes: {
+        "ce-specversion": "1.0",
+        "ce-id": "01931b7c-3f2a-7000-8000-000000000001",
+        "ce-source": "https://example.test/service",
+        "ce-type": "com.example.thing.happened.v1",
+      },
+      data: Buffer.from("{}"),
+      publishTime: new Date(),
+      deliveryAttempt: 1,
+      orderingKey: "",
+      ack: vi.fn(),
+      nack: vi.fn(),
+    });
+    await new Promise((r) => setImmediate(r));
+
+    await reader.forceFlush();
+    const points = exporter
+      .getMetrics()
+      .flatMap((m) => m.scopeMetrics.flatMap((s) => s.metrics))
+      .find((m) => m.descriptor.name === "werken.messages.inflight")?.dataPoints;
+
+    expect(points?.map((p) => p.attributes.subscription)).toEqual(["alice-orders-consumer"]);
   });
 });

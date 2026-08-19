@@ -55,6 +55,7 @@ export class PatternRouter {
     const seen = new Set<string>();
     for (const [pattern, handler] of entries) {
       assertNotChained(pattern, handler);
+      assertEventHandler(pattern, handler);
       assertSupported(pattern);
       // Nest signals a duplicate by chaining handlers, which assertNotChained catches. A caller
       // building this router directly gets no such marker, and without this an exact duplicate
@@ -158,6 +159,27 @@ function assertSupported(pattern: string): void {
         '"*" is only allowed as the final segment ("com.example.*") or on its own ("*").',
     );
   }
+}
+
+/**
+ * Nest registers `@MessagePattern` and `@EventPattern` handlers into the same map, telling them
+ * apart only by the `isEventHandler` flag it stamps on the callback.
+ *
+ * This transport carries events: there is no reply path, so a request/response handler would run
+ * and have its return value silently discarded. Refused at startup for the same reason a duplicate
+ * pattern is — a handler whose result goes nowhere is far harder to notice than a boot failure.
+ *
+ * Only an explicit `false` is refused. A router built directly, by this repo's tests or by anything
+ * that does not go through Nest, carries no flag at all and is left alone.
+ */
+function assertEventHandler(pattern: string, handler: EventHandler): void {
+  if ((handler as { isEventHandler?: boolean }).isEventHandler !== false) return;
+
+  throw new InvalidPatternError(
+    `werken: pattern ${JSON.stringify(pattern)} is registered with @MessagePattern. ` +
+      "This transport delivers events and has no reply path, so the handler's return value would " +
+      "be discarded. Use @EventPattern instead.",
+  );
 }
 
 /**

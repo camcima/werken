@@ -46,6 +46,8 @@ export class WerkenPubSubTransport
   /** In-flight handlers, so shutdown can wait for them rather than cutting them off. */
   private readonly inFlight = new Map<IncomingMessage, Promise<void>>();
   private draining = false;
+  /** The in-progress drain, so every later close() awaits it rather than reporting a false finish. */
+  private closing?: Promise<void>;
   // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type -- Server<EventsMap> constrains to Record<string, Function>, so this is the type Nest hands us
   private readonly listeners = new Map<keyof WerkenTransportEvents, Function[]>();
   private pipeline: MessagePipeline;
@@ -53,6 +55,14 @@ export class WerkenPubSubTransport
   private readonly telemetry: Telemetry;
   /** Built once at listen(), so patterns are not re-scanned for every message. */
   private router?: PatternRouter;
+  /**
+   * The prefix-resolved subscription name, once listen() has worked it out.
+   *
+   * Held because telemetry outside the pipeline needs it too: `CloudEventContext.subscription`,
+   * dead-letter provenance and the pipeline's own metrics all report the resolved name, and an
+   * in-flight series labelled with the raw one joins to none of them.
+   */
+  private resolvedSubscription?: string;
 
   constructor(private readonly options: WerkenTransportOptions) {
     super();
@@ -176,6 +186,7 @@ export class WerkenPubSubTransport
     // The resolved name, not options.subscription: it is what CloudEventContext.subscription,
     // telemetry labels and dead-letter provenance report, so all three name the resource that
     // actually delivered the message.
+    this.resolvedSubscription = subscriptionName;
     this.pipeline = this.buildPipeline(
       subscriptionName,
       deadLetterTopic === undefined ? undefined : new PubSubDeadLetterPublisher(this.client, deadLetterTopic),
@@ -254,7 +265,20 @@ export class WerkenPubSubTransport
     }
   }
 
+  /**
+   * Drain sequence, and the answer to every later caller of it.
+   *
+   * Held rather than short-circuited so a second close() reports finished when the drain actually
+   * is. Nest awaits this to decide when the process may exit, and telling it "done" while
+   * in-flight handlers are still running is how work gets cut off at exactly the moment shutdown
+   * was supposed to protect it.
+   */
   async close(): Promise<void> {
+    this.closing ??= this.drain();
+    return this.closing;
+  }
+
+  private async drain(): Promise<void> {
     if (this.draining) return;
     this.draining = true;
     const startedAt = Date.now();
@@ -287,10 +311,18 @@ export class WerkenPubSubTransport
     }
     this.inFlight.clear();
 
-    // 4. Close the subscription and client.
+    // 4. Close the subscription and client. Guarded separately, because the client holds the gRPC
+    //    channels, retry timers and credentials refresh loop — leaving those open because the
+    //    subscription objected on the way out is how a crash-looping worker runs out of handles.
     try {
-      await this.subscription?.close();
+      try {
+        await this.subscription?.close();
+      } catch (error) {
+        this.logger.error(`werken: failed to close the subscription during drain: ${asMessage(error)}`);
+      }
       await this.client?.close();
+    } catch (error) {
+      this.logger.error(`werken: failed to close the client during drain: ${asMessage(error)}`);
     } finally {
       this.subscription?.removeAllListeners();
       this.subscription = undefined;
@@ -365,17 +397,50 @@ export class WerkenPubSubTransport
     this.inFlight.set(message, tracked);
     try {
       await tracked;
+    } catch (error) {
+      // The last guard on a fire-and-forget path. `listen()` starts this with `void`, so anything
+      // that escapes here is an unhandled rejection — which by default takes the worker down and
+      // loses every other in-flight message with it.
+      //
+      // The pipeline guards each of its own stages, but telemetry and the logger are both
+      // caller-supplied and both run outside those guards: a metrics exporter or a custom Nest
+      // logger that throws is enough to reach this.
+      this.abandonMessage(message, error);
     } finally {
       this.inFlight.delete(message);
     }
   }
 
+  /**
+   * Settles a message whose processing failed in a way nothing below could account for.
+   *
+   * Every step is individually guarded because the thing that failed may be the logger itself, and
+   * a second throw here would put us back where we started — with the message abandoned.
+   */
+  private abandonMessage(message: IncomingMessage, error: unknown): void {
+    try {
+      this.logger.error(`werken: pipeline failed for ${message.id}: ${asMessage(error)} — nacking`);
+    } catch {
+      /* the logger is a candidate for having thrown above; there is nowhere left to report this */
+    }
+
+    // The drain nacks what is still running when it times out and then forgets it. Settling again
+    // would race the redelivery that is already under way.
+    if (!this.inFlight.has(message)) return;
+    try {
+      message.nack();
+    } catch {
+      /* the subscriber closed underneath us; the ack deadline lapses and Pub/Sub redelivers */
+    }
+  }
+
   private async processMessage(message: IncomingMessage): Promise<void> {
-    this.telemetry.addInFlight(this.options.subscription, 1);
+    const subscription = this.resolvedSubscription ?? this.options.subscription;
+    this.telemetry.addInFlight(subscription, 1);
     try {
       await this.processTraced(message);
     } finally {
-      this.telemetry.addInFlight(this.options.subscription, -1);
+      this.telemetry.addInFlight(subscription, -1);
     }
   }
 

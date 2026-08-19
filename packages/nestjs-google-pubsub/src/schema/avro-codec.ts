@@ -136,8 +136,12 @@ export class AvroCodec {
  * The writer schema could not be fetched: a Schema Service outage, a client without schema support,
  * or a revision that has not propagated yet. An availability problem rather than evidence that the
  * message cannot be read, which is why it is the one case `strict: false` may fall back on.
+ *
+ * Exported because the distinction outlives this module: `MessagePipeline` routes it through
+ * `validation.onSchemaUnavailable` (default nack) rather than `onDecodeFailure`, since redelivering
+ * costs a retry while dead-lettering a decodable message costs a manual redrive.
  */
-class WriterSchemaUnavailableError extends SchemaDecodeError {
+export class WriterSchemaUnavailableError extends SchemaDecodeError {
   constructor(revisionQualifiedName: string, cause: unknown) {
     super(`could not fetch writer schema ${revisionQualifiedName}: ${asMessage(cause)}`, cause);
     this.name = "WriterSchemaUnavailableError";

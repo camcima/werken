@@ -46,3 +46,32 @@ describe("calendar validity", () => {
     expect(envelope.time).toEqual(new Date("2026-08-02T16:00:00Z"));
   });
 });
+
+/**
+ * The Date-parse guard catches minute 60 and second 60, but not hour 24: JS accepts it and rolls
+ * to the following midnight, so "2026-08-02T24:00:00Z" arrives as the 3rd. That is the same silent
+ * day-rolling the calendar check above exists to refuse, and RFC 3339 forbids hour 24 outright.
+ */
+describe("time-of-day range", () => {
+  test.each([
+    ["2026-08-02T24:00:00Z", "hour 24 rolls to the next day"],
+    ["2026-08-02T24:00:00.000Z", "with a fraction"],
+    ["2026-08-02T24:00:00+00:00", "with an explicit offset"],
+  ])("rejects %s (%s)", (value) => {
+    expect(() => parseEnvelope({ ...required, "ce-time": value })).toThrow(
+      expect.objectContaining({ code: "invalid-attribute", attribute: "ce-time" }),
+    );
+  });
+
+  test("still accepts the last representable instant of a day", () => {
+    const envelope = parseEnvelope({ ...required, "ce-time": "2026-08-02T23:59:59.999Z" });
+
+    expect(envelope.time?.toISOString()).toBe("2026-08-02T23:59:59.999Z");
+  });
+
+  test("applies the same range check to ce-ingestiontime", () => {
+    expect(() => parseEnvelope({ ...required, "ce-ingestiontime": "2026-08-02T24:00:00Z" })).toThrow(
+      expect.objectContaining({ code: "invalid-attribute", attribute: "ce-ingestiontime" }),
+    );
+  });
+});

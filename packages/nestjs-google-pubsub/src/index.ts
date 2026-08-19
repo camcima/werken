@@ -75,6 +75,6 @@ export type {
 // Errors worth catching by type
 // ---------------------------------------------------------------------------
 
-export { SchemaDecodeError } from "./schema/avro-codec.js";
+export { SchemaDecodeError, WriterSchemaUnavailableError } from "./schema/avro-codec.js";
 export { ResourcePrefixError } from "./resource-name.js";
 export { AmbiguousPatternError, InvalidPatternError } from "./pattern-router.js";

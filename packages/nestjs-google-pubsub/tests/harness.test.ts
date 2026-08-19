@@ -275,3 +275,65 @@ describe("the injected clock", () => {
     }
   });
 });
+
+/**
+ * `emitRaw` exists for envelopes `emit` cannot express — a missing attribute, a bad specversion, a
+ * body that is not JSON. Those are exactly the cases whose behaviour depends on the delivery: a
+ * redelivery policy keyed on `deliveryAttempt`, or a handler asserting the ordering key survived.
+ * Dropping the options meant none of that could be written against a raw emit.
+ */
+describe("emitRaw delivery options", () => {
+  test("passes the delivery attempt through to the context", async () => {
+    harness = await createWerkenTestHarness({ module: WorkerModule });
+
+    await harness.emitRaw(
+      {
+        "ce-specversion": "1.0",
+        "ce-id": "raw-1",
+        "ce-source": "https://example.test/service",
+        "ce-type": TYPE,
+      },
+      JSON.stringify({ hello: "raw" }),
+      { deliveryAttempt: 4 },
+    );
+
+    const store = harness.get<ThingStore>(ThingStore);
+    expect(store.saved[0].ctx.deliveryAttempt).toBe(4);
+  });
+
+  test("passes the ordering key through to the context", async () => {
+    harness = await createWerkenTestHarness({ module: WorkerModule });
+
+    await harness.emitRaw(
+      {
+        "ce-specversion": "1.0",
+        "ce-id": "raw-2",
+        "ce-source": "https://example.test/service",
+        "ce-type": TYPE,
+      },
+      JSON.stringify({ hello: "raw" }),
+      { orderingKey: "thing-42" },
+    );
+
+    const store = harness.get<ThingStore>(ThingStore);
+    expect(store.saved[0].ctx.orderingKey).toBe("thing-42");
+  });
+
+  test("still defaults the delivery when no options are given", async () => {
+    harness = await createWerkenTestHarness({ module: WorkerModule });
+
+    await harness.emitRaw(
+      {
+        "ce-specversion": "1.0",
+        "ce-id": "raw-3",
+        "ce-source": "https://example.test/service",
+        "ce-type": TYPE,
+      },
+      JSON.stringify({ hello: "raw" }),
+    );
+
+    const store = harness.get<ThingStore>(ThingStore);
+    expect(store.saved[0].ctx.deliveryAttempt).toBe(1);
+    expect(store.saved[0].ctx.orderingKey).toBeUndefined();
+  });
+});

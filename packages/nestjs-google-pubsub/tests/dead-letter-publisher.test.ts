@@ -247,3 +247,130 @@ describe("structured detail and ordering provenance", () => {
     expect(sent.attributes).not.toHaveProperty(DEAD_LETTER_ATTRIBUTES.orderingKey);
   });
 });
+
+/**
+ * Pub/Sub's per-message limits apply to the dead-letter publish like any other, and this is the one
+ * publish that must not fail: the pipeline maps a failed dead-letter publish to a nack, so an
+ * oversized provenance attribute would redeliver the poison message into the same failure forever.
+ * The emulator enforces none of these, so only a unit test can hold the line.
+ */
+describe("Pub/Sub attribute limits", () => {
+  const publishWith = async (request: Partial<Parameters<PubSubDeadLetterPublisher["publish"]>[0]>) => {
+    const { published, topic } = fakeTopic();
+    const publisher = new PubSubDeadLetterPublisher({ topic: () => topic } as never, "dead-letters");
+    await publisher.publish({
+      message: incoming(),
+      reason: "unknown shipment",
+      stage: "handler",
+      subscription: "orders-consumer",
+      timestamp: new Date("2026-08-03T10:00:00.000Z"),
+      ...request,
+    } as never);
+    return published[0];
+  };
+
+  // An envelope validation error interpolates the offending attribute value, which can itself be a
+  // full 1024 bytes, and a TerminalEventError reason is whatever the application passed.
+  test("caps an oversized reason at the 1024-byte attribute limit", async () => {
+    const sent = await publishWith({ reason: `unknown shipment ${"x".repeat(4000)}` });
+
+    const reason = sent.attributes[DEAD_LETTER_ATTRIBUTES.reason];
+    expect(Buffer.byteLength(reason, "utf8")).toBeLessThanOrEqual(1024);
+    // The head survives, so the operator still reads what went wrong.
+    expect(reason.startsWith("unknown shipment xxx")).toBe(true);
+    expect(reason).toMatch(/truncated/);
+  });
+
+  test("leaves a reason that already fits untouched", async () => {
+    const sent = await publishWith({ reason: "unknown shipment known-1" });
+
+    expect(sent.attributes[DEAD_LETTER_ATTRIBUTES.reason]).toBe("unknown shipment known-1");
+  });
+
+  // Truncating mid-sequence yields U+FFFD, and mid-surrogate-pair a lone surrogate — neither is
+  // something an operator should have to see in a diagnostic.
+  test("truncates on a character boundary, not a byte boundary", async () => {
+    const sent = await publishWith({ reason: "🚚".repeat(1000) });
+
+    const reason = sent.attributes[DEAD_LETTER_ATTRIBUTES.reason];
+    expect(Buffer.byteLength(reason, "utf8")).toBeLessThanOrEqual(1024);
+    expect(reason).not.toMatch(/�/);
+    expect(reason.match(/\p{Surrogate}/u)).toBeNull();
+  });
+
+  // Pub/Sub allows at most 100 attributes. The original's are forwarded verbatim, so a message that
+  // was itself at the limit would push the publish over it once provenance is added.
+  test("stays within the 100-attribute limit when the original is already at it", async () => {
+    const crowded = Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`attr-${i}`, String(i)]));
+    const sent = await publishWith({
+      message: incoming({ attributes: { ...crowded, "ce-type": TYPE, "ce-id": "id-1" } }),
+    });
+
+    expect(Object.keys(sent.attributes).length).toBeLessThanOrEqual(100);
+  });
+
+  // Provenance is why the message is on the topic at all, and the envelope is what redrive needs to
+  // republish it. Anything else is the first to go, and the drop is reported rather than silent.
+  test("keeps provenance and the envelope when it has to drop attributes", async () => {
+    const crowded = Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`attr-${i}`, String(i)]));
+    const sent = await publishWith({
+      message: incoming({ attributes: { ...crowded, "ce-type": TYPE, "ce-id": "id-1" } }),
+      detail: { shipmentId: "known-1" },
+    });
+
+    expect(sent.attributes[DEAD_LETTER_ATTRIBUTES.reason]).toBe("unknown shipment");
+    expect(sent.attributes[DEAD_LETTER_ATTRIBUTES.stage]).toBe("handler");
+    expect(sent.attributes[DEAD_LETTER_ATTRIBUTES.detail]).toBeDefined();
+    expect(sent.attributes["ce-type"]).toBe(TYPE);
+    expect(sent.attributes["ce-id"]).toBe("id-1");
+    expect(Number(sent.attributes[DEAD_LETTER_ATTRIBUTES.droppedAttributes])).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * `createEventPublisher` already documents why this matters and keeps one Topic per destination:
+ * each `client.topic()` call returns a Topic with its own publisher and batch queue, so building
+ * one per message means the SDK's batching never engages and every publish pays full per-message
+ * overhead. Dead-letter volume is normally low — but the moment it is not is a poison-message
+ * storm, which is exactly when the path should not be at its slowest.
+ */
+describe("Topic reuse", () => {
+  test("builds the Topic once however many messages are dead-lettered", async () => {
+    const { topic } = fakeTopic();
+    const topicFor = vi.fn(() => topic);
+    const publisher = new PubSubDeadLetterPublisher({ topic: topicFor } as never, "dead-letters");
+
+    for (let i = 0; i < 5; i++) {
+      await publisher.publish({
+        message: incoming(),
+        reason: "unknown shipment",
+        stage: "handler",
+        subscription: "orders-consumer",
+        timestamp: new Date("2026-08-03T10:00:00.000Z"),
+      });
+    }
+
+    expect(topicFor).toHaveBeenCalledTimes(1);
+  });
+
+  test("still publishes every message", async () => {
+    const { topic, published } = fakeTopic();
+    const publisher = new PubSubDeadLetterPublisher({ topic: vi.fn(() => topic) } as never, "dead-letters");
+
+    for (const id of ["a", "b", "c"]) {
+      await publisher.publish({
+        message: incoming({ id }),
+        reason: `unknown ${id}`,
+        stage: "handler",
+        subscription: "orders-consumer",
+        timestamp: new Date("2026-08-03T10:00:00.000Z"),
+      });
+    }
+
+    expect(published.map((p) => p.attributes[DEAD_LETTER_ATTRIBUTES.reason])).toEqual([
+      "unknown a",
+      "unknown b",
+      "unknown c",
+    ]);
+  });
+});

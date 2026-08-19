@@ -69,7 +69,12 @@ export interface WerkenTestHarnessOptions {
 
 export interface WerkenTestHarness {
   emit(type: string, data: unknown, options?: EmitOptions): Promise<void>;
-  emitRaw(attributes: Record<string, string>, body: Buffer | string): Promise<void>;
+  /**
+   * Emits an envelope `emit` cannot express — a missing attribute, an unsupported specversion, a
+   * body that is not JSON. Takes the same delivery options, since how a malformed message behaves
+   * is often exactly what depends on the attempt or the ordering key.
+   */
+  emitRaw(attributes: Record<string, string>, body: Buffer | string, options?: EmitOptions): Promise<void>;
   readonly acked: readonly HarnessRecord[];
   readonly nacked: readonly HarnessRecord[];
   /** Messages the pipeline sent to the dead-letter topic, with the reason and stage. */
@@ -238,8 +243,8 @@ export async function createWerkenTestHarness(options: WerkenTestHarnessOptions)
       await push(attributes, Buffer.from(JSON.stringify(data ?? null)), emitOptions);
     },
 
-    async emitRaw(attributes, body) {
-      await push({ ...attributes }, Buffer.isBuffer(body) ? body : Buffer.from(body), {});
+    async emitRaw(attributes, body, emitOptions = {}) {
+      await push({ ...attributes }, Buffer.isBuffer(body) ? body : Buffer.from(body), emitOptions);
     },
 
     get<T>(token: unknown): T {

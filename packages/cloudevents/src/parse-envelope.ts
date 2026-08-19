@@ -27,7 +27,7 @@ const KNOWN = new Set<string>([
  * "August 2, 2026" and locale-dependent forms — admitting those into a field whose purpose is a
  * globally comparable instant is how lateness maths silently goes wrong.
  */
-const RFC_3339 = /^(\d{4})-(\d{2})-(\d{2})[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/;
+const RFC_3339 = /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/;
 
 /** Days in `month` (1-based) of `year`, accounting for leap years. */
 function daysInMonth(year: number, month: number): number {
@@ -65,6 +65,21 @@ function optionalTimestamp(attributes: PubSubAttributes, key: string): Date | un
       "invalid-attribute",
       key,
       `${key} is not a real calendar date: ${JSON.stringify(raw)}`,
+    );
+  }
+
+  // Hour 24 needs the same treatment for the same reason: RFC 3339 forbids it, and Date accepts it
+  // by rolling to the following midnight — so "…T24:00:00Z" would enter the envelope as the next
+  // day. Minute and second 60 are rejected by the Date guard below rather than here, but checking
+  // all three together is what makes the range explicit rather than incidental.
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  if (hour > 23 || minute > 59 || second > 59) {
+    throw new EnvelopeValidationError(
+      "invalid-attribute",
+      key,
+      `${key} is not a real time of day: ${JSON.stringify(raw)}`,
     );
   }
 

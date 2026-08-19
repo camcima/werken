@@ -1,6 +1,6 @@
 import { uuidv7 } from "uuidv7";
 import { toPubSubAttributes } from "@werken/cloudevents";
-import { optionalRequire } from "./optional-require.cjs";
+import { loadOtelApi } from "./otel.js";
 import type { PubSubClientLike, TopicLike } from "./options.js";
 import { applyResourcePrefix, assertResourcePrefixSafe } from "./resource-name.js";
 
@@ -202,6 +202,11 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
   }
 
   function destinationFor<T>(request: PublishRequest<T>, publishOptions?: PublishOptions): Destination {
+    // Validated here rather than in prepareOne so it fails exactly where an unresolvable topic
+    // does: before anything is queued, which is what gives publishBatch its hold on the ordering
+    // key and puts the failure in PartialPublishError.failures instead of throwing out of the map.
+    assertPublishable(request, options.source);
+
     const resolved = publishOptions?.topic ?? options.topicResolver(request.type);
     if (resolved === undefined || resolved === "") {
       throw new Error(
@@ -438,11 +443,36 @@ export function createEventPublisher(options: EventPublisherOptions): EventPubli
 }
 
 /**
+ * The two envelope fields with no sensible default.
+ *
+ * Refused for the same reason an empty `id` is: a silent pass leaves the caller worse off than one
+ * who never tried. Both produce an envelope that `parseEnvelope` rejects outright, so the mistake
+ * would otherwise surface at the far end of the pipe — as dead-letters on somebody else's
+ * subscription — rather than at the publish that made it.
+ */
+function assertPublishable<T>(request: PublishRequest<T>, configuredSource: string): void {
+  if (request.type.trim() === "") {
+    throw new Error(
+      "werken: PublishRequest.type is empty. It is the routing key consumers match on, so an event " +
+        "without one can never be delivered to a handler.",
+    );
+  }
+
+  const source = request.source ?? configuredSource;
+  if (source.trim() === "") {
+    throw new Error(
+      "werken: ce-source is empty. Set EventPublisherOptions.source, or pass PublishRequest.source — " +
+        "it names the producing system and is half of every consumer's idempotency key.",
+    );
+  }
+}
+
+/**
  * Lifts the W3C traceparent from the ambient OpenTelemetry context, so a consumer's span joins the
  * producer's trace. Absent OTel, or outside a span, this contributes nothing.
  */
 function currentTraceparent(): string | undefined {
-  const api = optionalRequire("@opentelemetry/api") as typeof import("@opentelemetry/api") | undefined;
+  const api = loadOtelApi();
   if (api === undefined) return undefined;
   try {
     const carrier: Record<string, string> = {};
