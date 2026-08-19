@@ -249,3 +249,36 @@ describe("duplicate entries passed directly", () => {
     expect(() => router({ "com.example.thing.v1": handler("exact"), "com.example.*": handler("wild") })).not.toThrow();
   });
 });
+
+/**
+ * Nest registers `@MessagePattern` and `@EventPattern` handlers into the same map, distinguishing
+ * them only by the `isEventHandler` flag it stamps on the callback. This transport carries events:
+ * a request/response handler has no reply path here, so its return value would be computed and
+ * silently dropped. Refusing at startup is the same trade the duplicate-pattern check makes.
+ */
+describe("request/response handlers", () => {
+  const messageHandler = (name: string) =>
+    Object.assign(handler(name), { isEventHandler: false }) as unknown as () => void;
+
+  test("rejects a @MessagePattern handler", () => {
+    expect(() => new PatternRouter([["com.example.thing.v1", messageHandler("rpc")]])).toThrow(InvalidPatternError);
+  });
+
+  test("names the offending pattern and the decorator to change", () => {
+    expect(() => new PatternRouter([["com.example.thing.v1", messageHandler("rpc")]])).toThrow(
+      /com\.example\.thing\.v1[\s\S]*EventPattern/,
+    );
+  });
+
+  test("accepts a handler Nest marked as an event handler", () => {
+    const eventHandler = Object.assign(handler("event"), { isEventHandler: true }) as unknown as () => void;
+
+    expect(() => new PatternRouter([["com.example.thing.v1", eventHandler]])).not.toThrow();
+  });
+
+  // A router built directly — by this repo's own tests, or by anything not going through Nest —
+  // carries no flag at all, and must keep working.
+  test("accepts an unflagged handler", () => {
+    expect(() => new PatternRouter([["com.example.thing.v1", handler("plain")]])).not.toThrow();
+  });
+});
