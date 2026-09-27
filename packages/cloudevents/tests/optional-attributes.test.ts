@@ -45,6 +45,27 @@ describe("datacontenttype", () => {
     const envelope = parseEnvelope({ ...required, "ce-datacontenttype": "application/avro" });
     expect(envelope.datacontenttype).toBe("application/avro");
   });
+
+  // The CloudEvents Go SDK writes the content type as a plain Content-Type attribute and never as
+  // ce-datacontenttype, and Google's Pub/Sub binding says to read content-type in binary mode.
+  // Defaulting to JSON there hands a consumer the wrong decoder for protobuf or Avro bytes.
+  test.each(["content-type", "Content-Type"])("falls back to the %s attribute other producers write", (key) => {
+    const envelope = parseEnvelope({ ...required, [key]: "application/protobuf" });
+    expect(envelope.datacontenttype).toBe("application/protobuf");
+  });
+
+  test("prefers ce-datacontenttype over content-type when both are present", () => {
+    const envelope = parseEnvelope({
+      ...required,
+      "ce-datacontenttype": "application/avro",
+      "content-type": "application/protobuf",
+    });
+    expect(envelope.datacontenttype).toBe("application/avro");
+  });
+
+  test("does not treat content-type as an extension", () => {
+    expect(parseEnvelope({ ...required, "content-type": "application/protobuf" }).extensions).toEqual({});
+  });
 });
 
 describe("timestamps", () => {

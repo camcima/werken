@@ -92,6 +92,21 @@ function extensionsFrom(attributes: PubSubAttributes): Record<string, string> {
   return extensions;
 }
 
+/**
+ * Pub/Sub has no single spelling for the content type in binary mode. Werken writes
+ * `ce-datacontenttype`, as the examples in Google's binding draft do; the CloudEvents Go SDK writes
+ * a plain `Content-Type`, and the same draft's text says to read `content-type`. Accept all three,
+ * preferring the prefixed one, so a protobuf event from another SDK is not labelled JSON.
+ */
+function datacontenttypeFrom(attributes: PubSubAttributes): string {
+  return (
+    attributes["ce-datacontenttype"] ||
+    attributes["content-type"] ||
+    attributes["Content-Type"] ||
+    DEFAULT_DATACONTENTTYPE
+  );
+}
+
 export function parseEnvelope(attributes: PubSubAttributes): CloudEventEnvelope {
   for (const key of REQUIRED) {
     requireAttribute(attributes, key);
@@ -113,7 +128,7 @@ export function parseEnvelope(attributes: PubSubAttributes): CloudEventEnvelope 
     type: attributes["ce-type"],
     subject: attributes["ce-subject"] || undefined,
     time: optionalTimestamp(attributes, "ce-time"),
-    datacontenttype: attributes["ce-datacontenttype"] || DEFAULT_DATACONTENTTYPE,
+    datacontenttype: datacontenttypeFrom(attributes),
     dataschema: attributes["ce-dataschema"] || undefined,
     traceparent: attributes["ce-traceparent"] || undefined,
     tracestate: attributes["ce-tracestate"] || undefined,
