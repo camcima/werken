@@ -27,8 +27,8 @@ allowBuilds:
 
 overrides:
   brace-expansion: ^5.0.6
-  fast-uri: ^3.1.2
-  js-yaml: ^4.2.0
+  fast-uri: ^3.1.6
+  js-yaml: ^4.3.2
   # Transitive, dev-only: postcss -> vite -> vitest. GHSA-2v37-7h3g-55p8 (CVSS 8.2) originally
   # named 3.3.17 as the first patched version, which is what the earlier override pinned. The
   # advisory was amended on 2026-08-13 to a vulnerable range of `< 3.3.18`, so that pin went stale
