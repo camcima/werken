@@ -2,6 +2,31 @@
 
 ## [0.6.0](https://github.com/camcima/werken/compare/v0.5.0...v0.6.0) (2026-09-27)
 
+A minor rather than a major, as with 0.2.0: the one breaking change is to a type, and the others
+tighten behaviour that was already wrong. Read this section before upgrading.
+
+**Check before you upgrade**
+
+- **Publishing an extension named after an envelope attribute now throws.** That covers
+  `specversion`, `id`, `source`, `type`, `subject`, `time`, `datacontenttype`, `dataschema`,
+  `traceparent`, `tracestate`, `ingestiontime` and the empty name. Before, a required one was
+  silently overwritten, and an optional one was written as that attribute whenever the field was
+  absent. `toPubSubAttributes` and the Nest publisher both throw `EnvelopeValidationError` with
+  `invalid-attribute`.
+- **`CloudEventEnvelope.specversion` is now typed as `"1.0"`.** Type-only. Code that builds an
+  envelope from a `string` variable has to narrow it.
+- **`datacontenttype` can change for messages from other producers.** A message without
+  `ce-datacontenttype` but with a `content-type` or `Content-Type` attribute now reports that value
+  instead of `application/json`. The CloudEvents Go SDK sends the latter. Decoding is unchanged; only
+  the value handlers see on `ctx.datacontenttype` differs.
+
+**Also**
+
+- An invalid `Date` in `time` or `ingestiontime` now raises `EnvelopeValidationError` instead of a
+  bare `RangeError`.
+- A `ce-__proto__` attribute is preserved on `extensions` instead of being lost. A bare `ce-` is
+  ignored.
+
 ### ⚠ BREAKING CHANGES
 
 * **cloudevents:** CloudEventEnvelope.specversion is now the literal type "1.0".
