@@ -79,14 +79,21 @@ function optionalTimestamp(attributes: PubSubAttributes, key: string): Date | un
   return parsed;
 }
 
-/** Every `ce-` attribute the envelope has no named field for. Preserved verbatim on `extensions`. */
+/**
+ * Every `ce-` attribute the envelope has no named field for, preserved verbatim on `extensions`. A
+ * bare `ce-` names nothing and is skipped.
+ *
+ * Defined rather than assigned: assigning `extensions["__proto__"]` hits the prototype setter, which
+ * discards a string value, so `ce-__proto__` would vanish. An ordinary object is kept, rather than a
+ * null-prototype one, so consumers can still call its methods.
+ */
 function extensionsFrom(attributes: PubSubAttributes): Record<string, string> {
   const extensions: Record<string, string> = {};
   for (const [key, value] of Object.entries(attributes)) {
     if (!key.startsWith(CE_PREFIX)) continue;
     const name = key.slice(CE_PREFIX.length);
-    if (!ENVELOPE_ATTRIBUTES.has(name)) {
-      extensions[name] = value;
+    if (name !== "" && !ENVELOPE_ATTRIBUTES.has(name)) {
+      Object.defineProperty(extensions, name, { value, enumerable: true, writable: true, configurable: true });
     }
   }
   return extensions;
