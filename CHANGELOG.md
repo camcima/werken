@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.6.0](https://github.com/camcima/werken/compare/v0.5.0...v0.6.0) (2026-09-27)
+
+### ⚠ BREAKING CHANGES
+
+* **cloudevents:** CloudEventEnvelope.specversion is now the literal type "1.0".
+  Code that builds an envelope from a string-typed variable needs to narrow it.
+
+### Bug Fixes
+
+* **cloudevents:** keep ce-__proto__ and drop a bare ce- attribute ([760f555](https://github.com/camcima/werken/commit/760f555a2ebfae4218942c328e8411eb45e2fa71))
+* **cloudevents:** keep toPubSubAttributes inside its own error model ([ff7d973](https://github.com/camcima/werken/commit/ff7d973cc4f587797ad6d438c83eccaa207639fc))
+* **cloudevents:** read the content type other Pub/Sub producers write ([7a7be4a](https://github.com/camcima/werken/commit/7a7be4a03fe6292bf2c5f735490fcd12c1502317))
+* **cloudevents:** reject extensions named after envelope attributes ([c4a0fa0](https://github.com/camcima/werken/commit/c4a0fa06c92e911d29e08daa5019fa6c2a051230))
+* **deps:** bump vitest, fast-uri and js-yaml past new advisories ([402edb2](https://github.com/camcima/werken/commit/402edb2037c17458055df7c7852442995349e2fe))
+
 ## [0.5.0](https://github.com/camcima/werken/compare/v0.4.1...v0.5.0) (2026-08-19)
 
 A minor rather than a patch, although every commit below is a `fix:`. Three of them change
