@@ -35,6 +35,9 @@ jobs:
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
+      # Installs the packed tarballs into a scratch consumer. Tests alias @werken/* to source, so
+      # this is the only step that sees the package a user would install.
+      - run: pnpm run check:packed
       - run: pnpm run lint
       - run: pnpm run format:check
       - run: pnpm run typecheck
