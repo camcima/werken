@@ -16,6 +16,7 @@
     "lint:no-deep-imports": "sh scripts/check-no-deep-imports.sh",
     "lint:neutrality": "sh scripts/check-neutrality.sh",
     "lint:dead-code": "knip",
+    "check:packed": "sh scripts/check-packed.sh",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "release": "release-it",
