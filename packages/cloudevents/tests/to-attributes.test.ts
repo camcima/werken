@@ -42,6 +42,23 @@ describe("toPubSubAttributes", () => {
     expect(attributes["ce-ingestiontime"]).toBe("2026-08-02T15:00:00.000Z");
   });
 
+  test.each(["time", "ingestiontime"] as const)("rejects an invalid %s Date with a validation error", (field) => {
+    // `new Date(NaN)` is still a Date, so the type admits it; toISOString() would throw a bare
+    // RangeError that callers branching on EnvelopeValidationError would not recognise.
+    expect(() => toPubSubAttributes({ ...base, [field]: new Date(Number.NaN) })).toThrow(
+      expect.objectContaining({ code: "invalid-attribute", attribute: `ce-${field}` }),
+    );
+  });
+
+  test("types specversion as the only version it can write", () => {
+    // parseEnvelope rejects anything but 1.0, so the type should not admit an envelope that would
+    // serialise cleanly and then fail on the consumer's side of the wire.
+    // @ts-expect-error -- "0.3" is not a CloudEvents version this package speaks
+    const envelope: CloudEventEnvelope = { ...base, specversion: "0.3" };
+
+    expect(envelope.specversion).toBe("0.3");
+  });
+
   test("writes extensions back with the ce- prefix restored", () => {
     const attributes = toPubSubAttributes({ ...base, extensions: { tenantid: "acme", partitionkey: "7" } });
 

@@ -34,11 +34,24 @@ export function toPubSubAttributes(envelope: CloudEventEnvelope): Record<string,
   attributes["ce-datacontenttype"] = envelope.datacontenttype;
 
   if (envelope.subject !== undefined) attributes["ce-subject"] = envelope.subject;
-  if (envelope.time !== undefined) attributes["ce-time"] = envelope.time.toISOString();
+  if (envelope.time !== undefined) attributes["ce-time"] = timestamp(envelope.time, "ce-time");
   if (envelope.dataschema !== undefined) attributes["ce-dataschema"] = envelope.dataschema;
   if (envelope.traceparent !== undefined) attributes["ce-traceparent"] = envelope.traceparent;
   if (envelope.tracestate !== undefined) attributes["ce-tracestate"] = envelope.tracestate;
-  if (envelope.ingestiontime !== undefined) attributes["ce-ingestiontime"] = envelope.ingestiontime.toISOString();
+  if (envelope.ingestiontime !== undefined) {
+    attributes["ce-ingestiontime"] = timestamp(envelope.ingestiontime, "ce-ingestiontime");
+  }
 
   return attributes;
+}
+
+/**
+ * An invalid Date is still a Date, so the type cannot keep one out, and `toISOString()` would throw a
+ * bare RangeError. Raised as the same error type the parser uses, so a caller has one thing to catch.
+ */
+function timestamp(value: Date, key: string): string {
+  if (Number.isNaN(value.getTime())) {
+    throw new EnvelopeValidationError("invalid-attribute", key, `${key} is an invalid Date`);
+  }
+  return value.toISOString();
 }
