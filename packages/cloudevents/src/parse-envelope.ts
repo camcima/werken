@@ -1,26 +1,11 @@
+import { CE_PREFIX, ENVELOPE_ATTRIBUTES } from "./attributes.js";
 import { EnvelopeValidationError } from "./errors.js";
 import type { CloudEventEnvelope, PubSubAttributes } from "./types.js";
 
 const SPEC_VERSION = "1.0";
 const DEFAULT_DATACONTENTTYPE = "application/json";
-const CE_PREFIX = "ce-";
 
 const REQUIRED = ["ce-specversion", "ce-id", "ce-source", "ce-type"] as const;
-
-/**
- * Attributes this package lifts into named envelope fields. Everything else prefixed `ce-` is an
- * extension and is preserved verbatim on `extensions`.
- */
-const KNOWN = new Set<string>([
-  ...REQUIRED,
-  "ce-subject",
-  "ce-time",
-  "ce-datacontenttype",
-  "ce-dataschema",
-  "ce-traceparent",
-  "ce-tracestate",
-  "ce-ingestiontime",
-]);
 
 /**
  * RFC 3339 date-time. Deliberately stricter than `Date.parse`, which accepts things like
@@ -94,11 +79,14 @@ function optionalTimestamp(attributes: PubSubAttributes, key: string): Date | un
   return parsed;
 }
 
+/** Every `ce-` attribute the envelope has no named field for. Preserved verbatim on `extensions`. */
 function extensionsFrom(attributes: PubSubAttributes): Record<string, string> {
   const extensions: Record<string, string> = {};
   for (const [key, value] of Object.entries(attributes)) {
-    if (key.startsWith(CE_PREFIX) && !KNOWN.has(key)) {
-      extensions[key.slice(CE_PREFIX.length)] = value;
+    if (!key.startsWith(CE_PREFIX)) continue;
+    const name = key.slice(CE_PREFIX.length);
+    if (!ENVELOPE_ATTRIBUTES.has(name)) {
+      extensions[name] = value;
     }
   }
   return extensions;

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { parseEnvelope, toPubSubAttributes } from "@werken/cloudevents";
+import { EnvelopeValidationError, parseEnvelope, toPubSubAttributes } from "@werken/cloudevents";
 import type { CloudEventEnvelope } from "@werken/cloudevents";
 
 const base: CloudEventEnvelope = {
@@ -49,11 +49,47 @@ describe("toPubSubAttributes", () => {
     expect(attributes["ce-partitionkey"]).toBe("7");
   });
 
-  test("does not let an extension overwrite a known attribute", () => {
-    const attributes = toPubSubAttributes({ ...base, extensions: { type: "spoofed", id: "spoofed" } });
+  // Every name the envelope has a field for. An extension under one of these either loses to the
+  // field (required ones, always written) or silently stands in for it (optional ones, written only
+  // when present) — so an extension could declare a ce-time or ce-dataschema the envelope does not.
+  const reserved = [
+    "specversion",
+    "id",
+    "source",
+    "type",
+    "subject",
+    "time",
+    "datacontenttype",
+    "dataschema",
+    "traceparent",
+    "tracestate",
+    "ingestiontime",
+  ];
 
-    expect(attributes["ce-type"]).toBe("com.example.thing.happened.v1");
-    expect(attributes["ce-id"]).toBe("01931b7c-3f2a-7000-8000-000000000001");
+  test.each(reserved)("rejects an extension named %s when the envelope field is absent", (name) => {
+    expect(() => toPubSubAttributes({ ...base, extensions: { [name]: "x" } })).toThrow(
+      expect.objectContaining({ code: "invalid-attribute", attribute: `ce-${name}` }),
+    );
+  });
+
+  test.each(reserved)("rejects an extension named %s when the envelope field is present", (name) => {
+    const full: CloudEventEnvelope = {
+      ...base,
+      subject: "s",
+      time: new Date("2026-08-02T14:23:10.029Z"),
+      dataschema: "https://schemas.example.test/thing/v1",
+      traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+      tracestate: "vendor=value",
+      ingestiontime: new Date("2026-08-02T15:00:00.000Z"),
+    };
+
+    expect(() => toPubSubAttributes({ ...full, extensions: { [name]: "x" } })).toThrow(EnvelopeValidationError);
+  });
+
+  test("rejects an empty extension name, which would serialise as a bare ce- attribute", () => {
+    expect(() => toPubSubAttributes({ ...base, extensions: { "": "x" } })).toThrow(
+      expect.objectContaining({ code: "invalid-attribute", attribute: "ce-" }),
+    );
   });
 });
 

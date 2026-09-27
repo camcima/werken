@@ -1,18 +1,30 @@
+import { CE_PREFIX, ENVELOPE_ATTRIBUTES } from "./attributes.js";
+import { EnvelopeValidationError } from "./errors.js";
 import type { CloudEventEnvelope } from "./types.js";
-
-const CE_PREFIX = "ce-";
 
 /**
  * Bind an envelope to Pub/Sub message attributes (binary content mode).
  *
- * Extensions are written first so a malicious or careless extension key cannot shadow a known
- * CloudEvents attribute — `ce-type` must always be the routing key the envelope declares.
+ * Throws `EnvelopeValidationError` for an extension named after an envelope field. Overwriting it
+ * is not enough: optional fields are written only when present, so an extension named `time` or
+ * `dataschema` would stand in for an absent field and declare metadata the envelope does not.
+ * `parseEnvelope` can never produce such an envelope, so a collision is always a caller mistake.
  */
 export function toPubSubAttributes(envelope: CloudEventEnvelope): Record<string, string> {
   const attributes: Record<string, string> = {};
 
   for (const [name, value] of Object.entries(envelope.extensions)) {
-    attributes[`${CE_PREFIX}${name}`] = value;
+    const key = `${CE_PREFIX}${name}`;
+    if (name === "" || ENVELOPE_ATTRIBUTES.has(name)) {
+      throw new EnvelopeValidationError(
+        "invalid-attribute",
+        key,
+        name === ""
+          ? "extension name must not be empty"
+          : `extension ${JSON.stringify(name)} collides with the envelope's own ${key} attribute`,
+      );
+    }
+    attributes[key] = value;
   }
 
   attributes["ce-specversion"] = envelope.specversion;

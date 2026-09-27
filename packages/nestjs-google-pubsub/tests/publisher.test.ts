@@ -216,6 +216,17 @@ describe("envelope construction", () => {
     expect(published[0].attributes["ce-tenantid"]).toBe("acme");
   });
 
+  // An extension named after an envelope field would otherwise stand in for it: with no dataschema
+  // on the request, `extensions: { dataschema }` would reach the wire as ce-dataschema.
+  test("rejects an extension named after an envelope attribute, and publishes nothing", async () => {
+    const { publisher, published } = publisherWith();
+
+    await expect(
+      publisher.publish({ type: TYPE, data: {}, extensions: { dataschema: "https://untrusted.example/schema" } }),
+    ).rejects.toThrow(expect.objectContaining({ code: "invalid-attribute", attribute: "ce-dataschema" }));
+    expect(published).toHaveLength(0);
+  });
+
   test("sets specversion 1.0", async () => {
     const { publisher, published } = publisherWith();
     await publisher.publish({ type: TYPE, data: {} });
