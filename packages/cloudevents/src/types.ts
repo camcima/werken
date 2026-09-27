@@ -6,7 +6,8 @@ export type PubSubAttributes = Readonly<Record<string, string>>;
  * Carries no payload — the domain payload is the message body.
  */
 export interface CloudEventEnvelope {
-  readonly specversion: string;
+  /** The only version `parseEnvelope` accepts, so the only one this package will write. */
+  readonly specversion: "1.0";
   readonly id: string;
   readonly source: string;
   readonly type: string;

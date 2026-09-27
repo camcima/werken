@@ -47,6 +47,6 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc --build"
+    "build": "tsc --build && tsc --build tsconfig.cjs.json && node -e \"require('fs').writeFileSync('dist/cjs/package.json', '{\\\"type\\\":\\\"commonjs\\\"}\\\\n')\""
   }
 }

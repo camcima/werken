@@ -45,6 +45,27 @@ describe("datacontenttype", () => {
     const envelope = parseEnvelope({ ...required, "ce-datacontenttype": "application/avro" });
     expect(envelope.datacontenttype).toBe("application/avro");
   });
+
+  // The CloudEvents Go SDK writes the content type as a plain Content-Type attribute and never as
+  // ce-datacontenttype, and Google's Pub/Sub binding says to read content-type in binary mode.
+  // Defaulting to JSON there hands a consumer the wrong decoder for protobuf or Avro bytes.
+  test.each(["content-type", "Content-Type"])("falls back to the %s attribute other producers write", (key) => {
+    const envelope = parseEnvelope({ ...required, [key]: "application/protobuf" });
+    expect(envelope.datacontenttype).toBe("application/protobuf");
+  });
+
+  test("prefers ce-datacontenttype over content-type when both are present", () => {
+    const envelope = parseEnvelope({
+      ...required,
+      "ce-datacontenttype": "application/avro",
+      "content-type": "application/protobuf",
+    });
+    expect(envelope.datacontenttype).toBe("application/avro");
+  });
+
+  test("does not treat content-type as an extension", () => {
+    expect(parseEnvelope({ ...required, "content-type": "application/protobuf" }).extensions).toEqual({});
+  });
 });
 
 describe("timestamps", () => {
@@ -86,6 +107,20 @@ describe("extensions", () => {
     const envelope = parseEnvelope({ ...required, "ce-subject": "s", "ce-time": "2026-08-02T14:23:10Z" });
 
     expect(envelope.extensions).toEqual({});
+  });
+
+  test("preserves an extension named __proto__ as data rather than losing it", () => {
+    // Assigned into a plain object, "__proto__" hits the prototype setter and a string value is
+    // silently discarded — the one name the "never dropped" promise did not hold for.
+    const extensions = parseEnvelope({ ...required, "ce-__proto__": "v" }).extensions;
+
+    expect(Object.keys(extensions)).toEqual(["__proto__"]);
+    expect(Object.getOwnPropertyDescriptor(extensions, "__proto__")?.value).toBe("v");
+    expect(Object.getPrototypeOf(extensions)).toBe(Object.prototype);
+  });
+
+  test("ignores a bare ce- attribute, which names no extension", () => {
+    expect(parseEnvelope({ ...required, "ce-": "v" }).extensions).toEqual({});
   });
 
   test("ignores non-CloudEvents attributes such as Pub/Sub's own", () => {

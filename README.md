@@ -96,9 +96,10 @@ attributes and the body is your payload, untouched. Every message must carry fou
 | `ce-source`      | The producing system, as a URI-reference. The other half of that key. |
 | `ce-type`        | The routing key — what `@EventPattern` matches on.                    |
 
-Everything else is optional and degrades sensibly: `ce-datacontenttype` defaults to
-`application/json`, `ce-time` falls back to the Pub/Sub publish time, and any unrecognised `ce-*`
-attribute is preserved verbatim on `ctx.extensions` rather than dropped.
+Everything else is optional and degrades sensibly: `ce-datacontenttype` falls back to a plain
+`content-type` attribute, as the CloudEvents Go SDK writes it, and then to `application/json`.
+`ce-time` falls back to the Pub/Sub publish time, and any unrecognised `ce-*` attribute is
+preserved verbatim on `ctx.extensions` rather than dropped.
 
 **Your payload is not constrained.** Werken parses the body as JSON, or decodes it as Avro when you
 configure `schemaRegistry` — and with your own `encode`, it can be any format you like, declared
