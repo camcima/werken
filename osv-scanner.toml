@@ -39,3 +39,38 @@
 id = "GHSA-8988-4f7v-96qf"
 ignoreUntil = 2026-11-30
 reason = "No upstream fix available: @google-cloud/pubsub 5.3.1 (latest) pins @opentelemetry/core ^1.30.1, patched only in 2.8.0. Reaches this repo through a peerDependency, and werken never extracts baggage, so the vulnerable propagator path is unreachable here."
+
+# GHSA-m8vh-jmq9-5rjg — @nestjs/microservices < 11.2.4: a deeply nested microservice message
+# pattern can terminate the process. GHSA-96h4-vgxj-gvm2 — @nestjs/microservices < 11.2.5:
+# unbounded memory growth in the TCP microservice transport.
+#
+# Suppressed deliberately while the maintainer holds the NestJS upgrade:
+#
+#  1. The 11.1.28 in pnpm-lock.yaml is this repo's dev/test copy (root devDependency, and what
+#     the workspace resolves for the peer). It is not shipped.
+#  2. @werken/nestjs-google-pubsub declares `@nestjs/microservices: ^11.0.0` as a peerDependency,
+#     so consumers resolve their own copy, and that range admits the patched >=11.2.5.
+#
+# Revisit when the NestJS hold is lifted; moving the dev copy to >=11.2.5 clears both.
+[[IgnoredVulns]]
+id = "GHSA-m8vh-jmq9-5rjg"
+ignoreUntil = 2027-01-31
+reason = "NestJS upgrade deliberately held by the maintainer. werken declares the peer @nestjs/microservices ^11.0.0, so consumers resolve their own copy and can take the patched >=11.2.5; this repo's 11.1.28 is only a dev/test copy."
+
+[[IgnoredVulns]]
+id = "GHSA-96h4-vgxj-gvm2"
+ignoreUntil = 2027-01-31
+reason = "NestJS upgrade deliberately held by the maintainer. werken declares the peer @nestjs/microservices ^11.0.0, so consumers resolve their own copy and can take the patched >=11.2.5; this repo's 11.1.28 is only a dev/test copy."
+
+# GHSA-c475-qrg2-pj4r — basic-ftp < 6.2.1: quadratic-time CPU denial of service in the
+# Client.list() Unix directory-listing parser.
+#
+# Dev-only and not reachable from either published package: release-it -> proxy-agent 8.0.2 ->
+# pac-proxy-agent 9.1.0 -> get-uri 8.0.1, which requires basic-ftp ^5.3.1. Every link in that
+# chain is already its latest release, and the fix exists only in basic-ftp 6.x.
+#
+# Revisit when get-uri (or proxy-agent) moves to basic-ftp 6.x.
+[[IgnoredVulns]]
+id = "GHSA-c475-qrg2-pj4r"
+ignoreUntil = 2027-01-31
+reason = "Dev-only transitive via release-it -> proxy-agent -> pac-proxy-agent -> get-uri 8.0.1, which requires basic-ftp ^5.3.1; the fix exists only in 6.x and no upstream release in that chain has moved. Not part of either published package."
